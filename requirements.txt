@@ -26,7 +26,7 @@ langchain-cohere
 cohere
 
 # Vector stores and data processing
-qdrant-client
+qdrant-client>=1.8.0
 pandas
 pymupdf
 dateparser

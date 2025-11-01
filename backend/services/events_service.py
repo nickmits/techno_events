@@ -6,25 +6,57 @@ from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from typing import TypedDict, Annotated, List, Optional, Dict, Any
+from typing import TypedDict, Annotated, List, Optional, Dict, Any, Literal
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
+from pydantic import BaseModel, Field
 import operator
 import os
 import logging
+import re
 
 from backend.tools.ra_events import fetch_ra_events
 from backend.tools.goout_events import fetch_goout_events
+from backend.services.vector_store_service import VectorStoreService
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 
+class RouteDecision(BaseModel):
+    """Schema for supervisor routing decision"""
+    next: Literal["retrieve", "fetch"] = Field(
+        description="The next action to take: 'retrieve' from cache or 'fetch' from web"
+    )
+    reasoning: str = Field(
+        description="Brief explanation for the routing decision"
+    )
+
+
+def create_supervisor(llm: ChatOpenAI, system_prompt: str):
+    """Create a supervisor chain for routing decisions using structured output"""
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        MessagesPlaceholder(variable_name="messages"),
+        ("system", "Decide the next action: 'retrieve' from cache or 'fetch' from web. Provide your reasoning."),
+    ])
+
+    # Use with_structured_output for modern LangChain
+    structured_llm = llm.with_structured_output(RouteDecision)
+
+    return prompt | structured_llm
+
+
 class AgentState(TypedDict):
     """State shared between agents"""
     messages: Annotated[List[BaseMessage], operator.add]
     next: str
+    start_date: Optional[str]
+    end_date: Optional[str]
+    location: Optional[str]
+    should_store: bool  # Whether to store fetched events
 
 
 class EventsService:
@@ -37,23 +69,182 @@ class EventsService:
 
         self.model = ChatOpenAI(model="gpt-4o-mini")
         self.graph = None
-        logger.info("EventsService initialized")
+        self.vector_store = VectorStoreService()
+        self.supervisor_chain = None  # Will be initialized in _build_graph
+        logger.info("EventsService initialized with vector store")
 
     async def _build_graph(self):
-        """Build the multi-agent graph with RA and GO-OUT agents"""
+        """Build the multi-agent graph with supervisor and conditional routing"""
 
-        # Build graph: Query → RA → GO-OUT → END (sequential execution)
+        # Create supervisor chain
+        self.supervisor_chain = create_supervisor(
+            self.model,
+            """You are a routing supervisor for an events discovery system.
+
+Your job is to decide whether to:
+- "retrieve" - Get events from the cached vector store (for previously fetched events or follow-up questions)
+- "fetch" - Fetch fresh events from web APIs (Resident Advisor and GO-OUT)
+
+RULES:
+- If the user is asking for events for the first time, choose "fetch"
+- If asking about previously fetched events or asking specific questions about existing events, choose "retrieve"
+- If in doubt, choose "fetch" to ensure fresh data"""
+        )
+
+        # Build graph with supervisor routing
         graph = StateGraph(AgentState)
 
-        graph.add_node("RAEvents", self._ra_agent_node)
-        graph.add_node("GOOUTEvents", self._goout_agent_node)
+        # Add nodes
+        graph.add_node("Supervisor", self._supervisor_node)
+        graph.add_node("VectorRetrieval", self._retrieval_node)
+        graph.add_node("WebFetch", self._web_fetch_node)
+        graph.add_node("StoreEvents", self._storage_node)
 
-        # Set entry point and create sequential chain
-        graph.set_entry_point("RAEvents")
-        graph.add_edge("RAEvents", "GOOUTEvents")
-        graph.add_edge("GOOUTEvents", END)
+        # Set entry point
+        graph.set_entry_point("Supervisor")
+
+        # Conditional routing from Supervisor
+        graph.add_conditional_edges(
+            "Supervisor",
+            self._route_supervisor,
+            {
+                "retrieve": "VectorRetrieval",
+                "fetch": "WebFetch"
+            }
+        )
+
+        # After retrieval, go to END
+        graph.add_edge("VectorRetrieval", END)
+
+        # After web fetch, store events then END
+        graph.add_edge("WebFetch", "StoreEvents")
+        graph.add_edge("StoreEvents", END)
 
         return graph.compile()
+
+    def _supervisor_node(self, state: AgentState) -> Dict[str, Any]:
+        """
+        Supervisor node that decides whether to retrieve from vector store or fetch from web
+        """
+        messages = state["messages"]
+        user_query = messages[0].content if messages else ""
+
+        # Extract date range from query or state
+        start_date = state.get("start_date")
+        end_date = state.get("end_date")
+        location = state.get("location")
+
+        # Check if events exist in vector store for these dates
+        events_exist = False
+        if start_date and end_date:
+            events_exist = self.vector_store.check_events_exist(start_date, end_date, location)
+            logger.info(f"Vector store check: Events exist for {start_date} to {end_date}: {events_exist}")
+
+        # Create context message for supervisor
+        context_msg = f"""
+Vector Store Status:
+- Events exist for dates {start_date} to {end_date}: {events_exist}
+- Location: {location or 'any'}
+
+User Query: {user_query}
+
+Decision Guide:
+- Choose "fetch" if events_exist is False OR user requests different dates
+- Choose "retrieve" if events_exist is True AND user is asking about those dates
+- Choose "fetch" if uncertain
+"""
+
+        # Build messages for supervisor chain
+        supervisor_messages = [
+            HumanMessage(content=context_msg)
+        ]
+
+        # Invoke supervisor chain
+        result = self.supervisor_chain.invoke({"messages": supervisor_messages})
+
+        # Result is now a RouteDecision Pydantic model
+        action = result.next if hasattr(result, 'next') else "fetch"
+        reasoning = result.reasoning if hasattr(result, 'reasoning') else "No reasoning provided"
+
+        logger.info(f"Supervisor decision: {action} - Reasoning: {reasoning}")
+
+        return {
+            "next": action,
+            "messages": []
+        }
+
+    def _route_supervisor(self, state: AgentState) -> str:
+        """Route based on supervisor decision"""
+        return state.get("next", "fetch")
+
+    def _retrieval_node(self, state: AgentState) -> Dict[str, Any]:
+        """Retrieve events from vector store"""
+        messages = state["messages"]
+        user_query = messages[0].content if messages else ""
+
+        logger.info(f"Retrieving events from vector store for query: {user_query}")
+
+        # Query vector store
+        result = self.vector_store.retrieve_events(user_query, k=20)
+
+        return {
+            "messages": [HumanMessage(content=result, name="VectorStore")]
+        }
+
+    def _web_fetch_node(self, state: AgentState) -> Dict[str, Any]:
+        """Fetch events from RA and GO-OUT (sequential)"""
+        messages = state["messages"]
+
+        # Call RA agent
+        ra_result = self._ra_agent_node(state)
+
+        # Update state with RA result
+        updated_state = {**state}
+        updated_state["messages"] = state["messages"] + ra_result["messages"]
+
+        # Call GO-OUT agent
+        goout_result = self._goout_agent_node(updated_state)
+
+        # Mark that we should store these events
+        return {
+            "messages": ra_result["messages"] + goout_result["messages"],
+            "should_store": True
+        }
+
+    def _storage_node(self, state: AgentState) -> Dict[str, Any]:
+        """Store fetched events in vector store"""
+        if not state.get("should_store", False):
+            logger.info("Skipping storage - no new events to store")
+            return {"messages": []}
+
+        # Get events from messages (skip first message which is user query)
+        event_messages = [msg for msg in state["messages"][1:] if hasattr(msg, 'name') and msg.name in ["RAEvents", "GOOUTEvents"]]
+
+        if not event_messages:
+            logger.warning("No event messages to store")
+            return {"messages": []}
+
+        # Convert to format for storage
+        events_data = [
+            {"name": msg.name, "content": msg.content}
+            for msg in event_messages
+        ]
+
+        start_date = state.get("start_date", "")
+        end_date = state.get("end_date", "")
+        location = state.get("location", "")
+
+        logger.info(f"Storing {len(events_data)} event sources in vector store")
+
+        # Store in vector store
+        self.vector_store.store_events(
+            events_data=events_data,
+            start_date=start_date,
+            end_date=end_date,
+            location=location
+        )
+
+        return {"messages": []}
 
     def _ra_agent_node(self, state: AgentState) -> Dict[str, Any]:
         """RA Events agent node - fetches events from Resident Advisor"""
@@ -72,8 +263,6 @@ class EventsService:
         current_weekday = today.weekday()  # 0=Monday, 6=Sunday
 
         # Calculate common date ranges
-        from datetime import timedelta
-
         # This weekend: If Mon-Thu → Fri-Sun, If Fri → Fri-Sun, If Sat-Sun → Sat-Sun
         if current_weekday <= 4:  # Monday to Friday
             days_until_friday = (4 - current_weekday) % 7
@@ -158,8 +347,6 @@ class EventsService:
         current_weekday = today.weekday()  # 0=Monday, 6=Sunday
 
         # Calculate common date ranges
-        from datetime import timedelta
-
         # This weekend: If Mon-Thu → Fri-Sun, If Fri → Fri-Sun, If Sat-Sun → Sat-Sun
         if current_weekday <= 4:  # Monday to Friday
             days_until_friday = (4 - current_weekday) % 7
@@ -266,9 +453,14 @@ class EventsService:
 
             logger.info(f"Executing query: {enhanced_query}")
 
-            # Execute query through graph
+            # Execute query through graph with state
             result = await self.graph.ainvoke({
-                "messages": [HumanMessage(content=enhanced_query)]
+                "messages": [HumanMessage(content=enhanced_query)],
+                "start_date": start_date,
+                "end_date": end_date,
+                "location": location,
+                "should_store": False,
+                "next": ""
             })
 
             return result
