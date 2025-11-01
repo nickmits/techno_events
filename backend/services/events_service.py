@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from typing import TypedDict, Annotated, List, Optional, Dict, Any
 from dotenv import load_dotenv
+from datetime import datetime
 import operator
 import os
 import logging
@@ -64,14 +65,61 @@ class EventsService:
         # Create model with tool binding
         model_with_tools = self.model.bind_tools([fetch_ra_events])
 
-        # System prompt
-        system_msg = """You are a Resident Advisor events specialist. Fetch electronic music events using fetch_ra_events.
+        # Get current date for context
+        today = datetime.now()
+        current_date_str = today.strftime("%Y-%m-%d")
+        day_of_week = today.strftime("%A")
+        current_weekday = today.weekday()  # 0=Monday, 6=Sunday
+
+        # Calculate common date ranges
+        from datetime import timedelta
+
+        # This weekend: If Mon-Thu → Fri-Sun, If Fri → Fri-Sun, If Sat-Sun → Sat-Sun
+        if current_weekday <= 4:  # Monday to Friday
+            days_until_friday = (4 - current_weekday) % 7
+            this_weekend_start = today + timedelta(days=days_until_friday)
+            this_weekend_end = this_weekend_start + timedelta(days=2)  # Friday to Sunday
+        else:  # Saturday or Sunday
+            this_weekend_start = today
+            days_until_sunday = 6 - current_weekday
+            this_weekend_end = today + timedelta(days=days_until_sunday)
+
+        # Next weekend: Always the following Friday-Sunday
+        days_until_next_friday = (4 - current_weekday + 7) % 7
+        if days_until_next_friday == 0 and current_weekday != 4:
+            days_until_next_friday = 7
+        next_weekend_start = today + timedelta(days=days_until_next_friday)
+        next_weekend_end = next_weekend_start + timedelta(days=2)
+
+        # Tomorrow and tonight
+        tomorrow = today + timedelta(days=1)
+        tonight = today
+
+        # System prompt with current date context
+        system_msg = f"""You are a Resident Advisor events specialist. Fetch electronic music events using fetch_ra_events.
+
+        CURRENT DATE AND TIME CONTEXT:
+        - Today is: {current_date_str} ({day_of_week})
+        - Current time: {today.strftime("%H:%M")}
+
+        RELATIVE DATE CALCULATIONS (use these exact dates):
+        - "tonight" or "today" → {tonight.strftime("%Y-%m-%d")}
+        - "tomorrow" → {tomorrow.strftime("%Y-%m-%d")}
+        - "this weekend" → {this_weekend_start.strftime("%Y-%m-%d")} to {this_weekend_end.strftime("%Y-%m-%d")} (Friday-Sunday)
+        - "next weekend" → {next_weekend_start.strftime("%Y-%m-%d")} to {next_weekend_end.strftime("%Y-%m-%d")} (Friday-Sunday)
+        - "this week" → {today.strftime("%Y-%m-%d")} to {(today + timedelta(days=6-current_weekday)).strftime("%Y-%m-%d")} (today through Sunday)
+        - "next week" → {(today + timedelta(days=7-current_weekday)).strftime("%Y-%m-%d")} to {(today + timedelta(days=13-current_weekday)).strftime("%Y-%m-%d")} (next Monday through Sunday)
+
+        IMPORTANT: When user says "this weekend", use the EXACT dates shown above for this weekend.
 
         Supported locations: greece, athens, berlin, london, newyork, amsterdam
 
-        Always use custom date ranges if the user specifies dates:
+        Always use custom date ranges when calling the tool:
         - Use start_date and end_date parameters in YYYY-MM-DD format
-        - Examples: "events Nov 1-5" → start_date="2025-11-01", end_date="2025-11-05"
+        - Examples:
+          * "events this weekend in Athens" → start_date="{this_weekend_start.strftime("%Y-%m-%d")}", end_date="{this_weekend_end.strftime("%Y-%m-%d")}", location="athens"
+          * "events Nov 1-5" → start_date="2025-11-01", end_date="2025-11-05"
+          * "events tomorrow" → start_date="{tomorrow.strftime("%Y-%m-%d")}", end_date="{tomorrow.strftime("%Y-%m-%d")}"
 
         Call the fetch_ra_events tool with appropriate parameters based on the user's query."""
 
@@ -103,15 +151,62 @@ class EventsService:
         # Create model with tool binding
         model_with_tools = self.model.bind_tools([fetch_goout_events])
 
-        # System prompt
-        system_msg = """You are a GO-OUT events specialist. Fetch nightlife, concerts, and sports events using fetch_goout_events.
+        # Get current date for context
+        today = datetime.now()
+        current_date_str = today.strftime("%Y-%m-%d")
+        day_of_week = today.strftime("%A")
+        current_weekday = today.weekday()  # 0=Monday, 6=Sunday
+
+        # Calculate common date ranges
+        from datetime import timedelta
+
+        # This weekend: If Mon-Thu → Fri-Sun, If Fri → Fri-Sun, If Sat-Sun → Sat-Sun
+        if current_weekday <= 4:  # Monday to Friday
+            days_until_friday = (4 - current_weekday) % 7
+            this_weekend_start = today + timedelta(days=days_until_friday)
+            this_weekend_end = this_weekend_start + timedelta(days=2)  # Friday to Sunday
+        else:  # Saturday or Sunday
+            this_weekend_start = today
+            days_until_sunday = 6 - current_weekday
+            this_weekend_end = today + timedelta(days=days_until_sunday)
+
+        # Next weekend: Always the following Friday-Sunday
+        days_until_next_friday = (4 - current_weekday + 7) % 7
+        if days_until_next_friday == 0 and current_weekday != 4:
+            days_until_next_friday = 7
+        next_weekend_start = today + timedelta(days=days_until_next_friday)
+        next_weekend_end = next_weekend_start + timedelta(days=2)
+
+        # Tomorrow and tonight
+        tomorrow = today + timedelta(days=1)
+        tonight = today
+
+        # System prompt with current date context
+        system_msg = f"""You are a GO-OUT events specialist. Fetch nightlife, concerts, and sports events using fetch_goout_events.
+
+        CURRENT DATE AND TIME CONTEXT:
+        - Today is: {current_date_str} ({day_of_week})
+        - Current time: {today.strftime("%H:%M")}
+
+        RELATIVE DATE CALCULATIONS (use these exact dates):
+        - "tonight" or "today" → {tonight.strftime("%Y-%m-%d")}
+        - "tomorrow" → {tomorrow.strftime("%Y-%m-%d")}
+        - "this weekend" → {this_weekend_start.strftime("%Y-%m-%d")} to {this_weekend_end.strftime("%Y-%m-%d")} (Friday-Sunday)
+        - "next weekend" → {next_weekend_start.strftime("%Y-%m-%d")} to {next_weekend_end.strftime("%Y-%m-%d")} (Friday-Sunday)
+        - "this week" → {today.strftime("%Y-%m-%d")} to {(today + timedelta(days=6-current_weekday)).strftime("%Y-%m-%d")} (today through Sunday)
+        - "next week" → {(today + timedelta(days=7-current_weekday)).strftime("%Y-%m-%d")} to {(today + timedelta(days=13-current_weekday)).strftime("%Y-%m-%d")} (next Monday through Sunday)
+
+        IMPORTANT: When user says "this weekend", use the EXACT dates shown above for this weekend.
 
         Categories: nightlife, concerts, sports, all
         Location filtering: athens, amsterdam, paris, toronto, etc. (searches in address)
 
-        Always use custom date ranges if the user specifies dates:
+        Always use custom date ranges when calling the tool:
         - Use start_date and end_date parameters in YYYY-MM-DD format
-        - Examples: "nightlife in Athens Nov 1-5" → category="nightlife", location="athens", start_date="2025-11-01", end_date="2025-11-05"
+        - Examples:
+          * "nightlife tonight" → category="nightlife", start_date="{tonight.strftime("%Y-%m-%d")}", end_date="{tonight.strftime("%Y-%m-%d")}"
+          * "concerts this weekend in Athens" → category="concerts", location="athens", start_date="{this_weekend_start.strftime("%Y-%m-%d")}", end_date="{this_weekend_end.strftime("%Y-%m-%d")}"
+          * "nightlife Nov 1-5" → category="nightlife", start_date="2025-11-01", end_date="2025-11-05"
 
         Call the fetch_goout_events tool with appropriate parameters based on the user's query."""
 

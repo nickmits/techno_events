@@ -99,6 +99,7 @@ class EventsRequest(BaseModel):
 - Use descriptive system prompts
 - Agents should work autonomously without user clarification
 - Tools should be properly decorated with `@tool`
+- **Include current date/time context** in system prompts to help LLM interpret relative dates like "this weekend", "next Friday", "tonight", etc.
 
 ### State Management
 - Use TypedDict for agent state
@@ -218,6 +219,42 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4
   "days_ahead": 30
 }
 ```
+
+**Date Query Options**:
+
+The system supports three ways to specify dates:
+
+1. **Natural Language Only** (LLM interprets based on current date):
+```json
+{
+  "query": "What events are happening this weekend in Athens?"
+}
+```
+```json
+{
+  "query": "Techno events next Friday in Berlin"
+}
+```
+
+2. **Structured Dates** (Most reliable):
+```json
+{
+  "query": "Electronic music events",
+  "location": "athens",
+  "start_date": "2025-11-04",
+  "end_date": "2025-11-12"
+}
+```
+
+3. **Combination** (Natural + Structured):
+```json
+{
+  "query": "What techno events are happening between 4 Nov and 12 Nov?",
+  "location": "berlin"
+}
+```
+
+**Current Date Context**: The system automatically provides current date/time to the LLM in each request, allowing it to accurately interpret relative dates like "tonight", "this weekend", "next week", etc.
 
 **Response**:
 ```json
