@@ -1,0 +1,42 @@
+# Core FastAPI dependencies
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+python-dotenv
+
+# Core scientific computing
+numpy
+
+# LangChain ecosystem - FIXED VERSIONS for compatibility
+langchain
+langchain-core
+langchain-community
+langgraph
+
+# OpenAI and AI dependencies
+langchain-openai
+openai
+
+# Experimental and specialized dependencies (use with caution)
+langchain-experimental
+
+# Cohere for reranking
+langchain-cohere
+cohere
+
+# Vector stores and data processing
+qdrant-client
+pandas
+pymupdf
+dateparser
+
+# Web search
+tavily-python
+
+# Optional: Remove if not needed
+# chromadb>=0.4.0
+
+# Note: PyTorch/TensorFlow not needed - using API-based models only
+# If you see warnings about missing PyTorch, ignore them
+

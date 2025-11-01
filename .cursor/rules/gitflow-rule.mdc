@@ -1,0 +1,121 @@
+---
+alwaysApply: true
+---
+
+# Gitflow Process Rules
+
+## Overview
+Follow the Git Flow branching model for all development work. This ensures clean, organized development and proper integration with the origin project.
+
+## Branch Structure
+- **main**: Production-ready code, should always be stable
+- **develop**: Integration branch for features, pre-production environment
+- **feature/**: Feature branches for new development
+- **release/**: Release preparation branches
+- **hotfix/**: Emergency fixes for production issues
+
+## Development Workflow
+
+### Starting New Work
+1. **Always pull latest changes first**: `git pull origin main` or `git pull origin develop`
+2. **Create feature branch from develop**:
+   ```bash
+   git checkout develop
+   git pull origin develop
+   git checkout -b feature/your-feature-name
+   ```
+
+### Working on Features
+1. **Make commits frequently** with clear, descriptive messages
+2. **Push feature branch** to origin regularly: `git push origin feature/your-feature-name`
+3. **Keep feature branches focused** on single features or small, related tasks
+
+### Completing Features
+1. **Update your feature branch** with latest develop changes:
+   ```bash
+   git checkout develop
+   git pull origin develop
+   git checkout feature/your-feature-name
+   git rebase develop
+   ```
+2. **Push updated feature branch**: `git push origin feature/your-feature-name`
+3. **Create Pull Request** from feature branch to develop branch
+4. **Never merge directly** to main or develop without PR review
+
+### Release Process
+1. **Create release branch** from develop: `git checkout -b release/v1.0.0`
+2. **Finalize release** (version bumps, documentation)
+3. **Merge to main**: `git checkout main && git merge release/v1.0.0`
+4. **Tag the release**: `git tag -a v1.0.0 -m "Release version 1.0.0"`
+5. **Merge back to develop**: `git checkout develop && git merge release/v1.0.0`
+6. **Push all changes**: `git push origin main develop --tags`
+
+### Hotfix Process
+1. **Create hotfix branch** from main: `git checkout main && git checkout -b hotfix/fix-description`
+2. **Make minimal changes** to fix the issue
+3. **Test thoroughly** before merging
+4. **Merge to main**: `git checkout main && git merge hotfix/fix-description`
+5. **Tag the hotfix**: `git tag -a v1.0.1 -m "Hotfix version 1.0.1"`
+6. **Merge back to develop**: `git checkout develop && git merge hotfix/fix-description`
+
+## Connection Rules
+
+### First Time Setup
+```bash
+# Clone the repository
+git clone <origin-repository-url>
+cd <repository-name>
+
+# Set up upstream tracking
+git remote add origin <origin-repository-url>
+git fetch origin
+
+# Checkout main branch and set tracking
+git checkout main
+git branch --set-upstream-to=origin/main main
+
+# Checkout develop branch and set tracking
+git checkout develop
+git branch --set-upstream-to=origin/develop develop
+```
+
+### Daily Workflow
+1. **Always start by pulling latest changes**: `git pull origin develop` (or `main` if working on hotfix)
+2. **Create feature branch** from the appropriate base branch
+3. **Work and commit** on feature branch
+4. **Push regularly** to keep origin updated: `git push origin feature/your-branch-name`
+
+### Before Each Session
+```bash
+# Check current status
+git status
+
+# Pull latest changes
+git checkout develop
+git pull origin develop
+
+# If working on existing feature, update it
+git checkout feature/your-feature-name
+git rebase develop
+```
+
+## Commands Summary
+- **Check status**: `git status`
+- **Pull latest**: `git pull origin [branch-name]`
+- **Create feature**: `git checkout develop && git checkout -b feature/name`
+- **Push feature**: `git push origin feature/name`
+- **Update feature**: `git rebase develop`
+- **Switch branches**: `git checkout [branch-name]`
+
+## Important Notes
+- **Never commit directly** to main or develop branches
+- **Always use Pull Requests** for code review and integration
+- **Keep commits atomic** and well-described
+- **Rebase instead of merge** when updating feature branches
+- **Delete feature branches** after successful merge
+- **Always test locally** before pushing or creating PRs
+
+## Error Recovery
+- **Undo last commit**: `git reset HEAD~1` (keeps changes) or `git reset --hard HEAD~1` (discards changes)
+- **Fix merge conflicts**: Resolve conflicts, then `git add .` and `git rebase --continue`
+- **Reset to origin**: `git fetch origin && git reset --hard origin/branch-name` (USE WITH CAUTION)
