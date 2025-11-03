@@ -1,44 +1,200 @@
 """
-Vector Store Service - Manages Qdrant vector store for event caching and retrieval
+Vector Store Service - CSV-first event storage with semantic retrieval
+Similar to book system: uses CSV as primary source with advanced retrieval
 """
 
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import Qdrant
+from langchain.retrievers import EnsembleRetriever
+from langchain.retrievers.multi_query import MultiQueryRetriever
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
+from langchain.chat_models import init_chat_model
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import logging
 import os
-import json
 import csv
 from pathlib import Path
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 
 class VectorStoreService:
-    """Service for managing event storage and retrieval in Qdrant vector store"""
+    """Service for managing event storage and retrieval from CSV with semantic search"""
 
-    def __init__(self, path: str = "./data/qdrant_storage", collection_name: str = "techno_events"):
-        """Initialize the vector store service"""
+    def __init__(self, csv_path: str = "./backend/data/events_with_metadata.csv"):
+        """Initialize the vector store service with CSV as primary source"""
+        self.csv_path = csv_path
         self.embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
-        self.collection_name = collection_name
-        self.storage_path = path
-        self.csv_path = "./data/events_with_metadata.csv"
+        self.retriever = None
+        self.events_df = None
 
         # Create data directory if it doesn't exist
         Path("./data").mkdir(exist_ok=True)
 
-        # Use persistent local Qdrant
-        self.client = QdrantClient(path=path)
-        self.initialized = False
-        self.vector_size = 1536  # text-embedding-3-small dimension
+        # Initialize CSV file with headers if it doesn't exist
+        if not Path(self.csv_path).exists():
+            self._initialize_csv()
+            logger.info(f"Created new CSV file at {self.csv_path}")
+        else:
+            logger.info(f"Using existing CSV file at {self.csv_path}")
 
-        logger.info(f"VectorStoreService created with persistent storage at {path}")
+        # Load CSV data and build retriever
+        self._load_and_build_retriever()
+
+    def _initialize_csv(self):
+        """Create CSV file with proper headers"""
+        fieldnames = [
+            "event_id", "title", "description", "venue", "event_date",
+            "url", "source", "location", "start_date", "end_date",
+            "attending", "music_types", "venue_lat", "venue_lon", "stored_at"
+        ]
+
+        with open(self.csv_path, mode='w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+    def _load_and_build_retriever(self):
+        """Load CSV data and build semantic retriever (like book system)"""
+        try:
+            # Check if CSV has data
+            if not Path(self.csv_path).exists() or os.path.getsize(self.csv_path) <= 100:
+                logger.info("CSV is empty or doesn't exist. Retriever will be built after first data fetch.")
+                self.events_df = pd.DataFrame()
+                self.retriever = None
+                return
+
+            # Load CSV
+            self.events_df = pd.read_csv(self.csv_path)
+
+            if len(self.events_df) == 0:
+                logger.info("CSV has no events yet. Retriever will be built after first data fetch.")
+                self.retriever = None
+                return
+
+            logger.info(f"Loaded {len(self.events_df)} events from CSV")
+
+            # Convert to LangChain documents
+            documents = []
+            for idx, row in self.events_df.iterrows():
+                # Create rich text content for embedding
+                event_text = f"""Event: {row['title']}
+Venue: {row['venue']}
+Date: {row['event_date']}
+Description: {row['description']}
+Music Types: {row.get('music_types', '')}
+Location: {row['location']}
+"""
+
+                metadata = {
+                    "event_id": row['event_id'],
+                    "title": row['title'],
+                    "venue": row['venue'],
+                    "event_date": row['event_date'],
+                    "url": row['url'],
+                    "source": row['source'],
+                    "location": row['location'],
+                    "start_date": row['start_date'],
+                    "end_date": row['end_date'],
+                    "attending": row.get('attending', ''),
+                    "music_types": row.get('music_types', ''),
+                    "row_index": idx
+                }
+
+                doc = Document(page_content=event_text.strip(), metadata=metadata)
+                documents.append(doc)
+
+            # Build ensemble retriever (BM25 + Semantic + Multi-Query)
+            self._build_ensemble_retriever(documents)
+
+            logger.info(f"Built retriever with {len(documents)} event documents")
+
+        except Exception as e:
+            logger.error(f"Error loading CSV and building retriever: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.retriever = None
+
+    def _build_ensemble_retriever(self, documents: List[Document]):
+        """Build sophisticated ensemble retriever like book system"""
+        try:
+            # Get API key
+            openai_api_key = os.getenv("OPENAI_API_KEY")
+            cohere_api_key = os.getenv("COHERE_API_KEY")
+
+            if not openai_api_key:
+                logger.warning("OPENAI_API_KEY not found, using basic retrieval")
+                self.retriever = None
+                return
+
+            # Initialize chat model for multi-query
+            chat_model = init_chat_model(
+                model="openai:gpt-4o-mini",
+                api_key=openai_api_key,
+                temperature=0.1,
+                max_tokens=1000
+            )
+
+            # 1. BM25 Retriever (keyword-based)
+            bm25_retriever = BM25Retriever.from_documents(documents)
+            bm25_retriever.k = 10
+
+            # 2. Semantic Vector Store
+            vectorstore = Qdrant.from_documents(
+                documents=documents,
+                embedding=self.embedding_model,
+                location=":memory:",
+                collection_name="events_semantic"
+            )
+
+            # 3. Multi-Query Retriever (generates multiple search queries)
+            multi_query_retriever = MultiQueryRetriever.from_llm(
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 15}),
+                llm=chat_model
+            )
+
+            # 4. Optional: Cohere Reranking
+            if cohere_api_key:
+                try:
+                    from langchain_cohere import CohereRerank
+
+                    compression_retriever = ContextualCompressionRetriever(
+                        base_retriever=multi_query_retriever,
+                        base_compressor=CohereRerank(model="rerank-v3.5", cohere_api_key=cohere_api_key)
+                    )
+
+                    # Ensemble with reranking
+                    self.retriever = EnsembleRetriever(
+                        retrievers=[bm25_retriever, multi_query_retriever, compression_retriever],
+                        weights=[0.3, 0.3, 0.4]
+                    )
+                    logger.info("Built ensemble retriever WITH Cohere reranking")
+                except ImportError:
+                    logger.warning("Cohere not available, using ensemble without reranking")
+                    self.retriever = EnsembleRetriever(
+                        retrievers=[bm25_retriever, multi_query_retriever],
+                        weights=[0.4, 0.6]
+                    )
+            else:
+                # Ensemble without reranking
+                self.retriever = EnsembleRetriever(
+                    retrievers=[bm25_retriever, multi_query_retriever],
+                    weights=[0.4, 0.6]
+                )
+                logger.info("Built ensemble retriever WITHOUT reranking")
+
+        except Exception as e:
+            logger.error(f"Error building ensemble retriever: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            self.retriever = None
 
     def check_events_exist(self, start_date: str, end_date: str, location: Optional[str] = None) -> bool:
         """
-        Check if events for a given date range and location exist in vector store
+        Check if events for a given date range and location exist in CSV
 
         Args:
             start_date: Start date in YYYY-MM-DD format
@@ -48,41 +204,26 @@ class VectorStoreService:
         Returns:
             True if events exist, False otherwise
         """
-        if not self.initialized:
-            logger.info("Vector store not initialized yet, no events exist")
-            return False
-
         try:
-            # Build filter conditions
-            conditions = [
-                FieldCondition(key="start_date", match=MatchValue(value=start_date)),
-                FieldCondition(key="end_date", match=MatchValue(value=end_date))
-            ]
+            if self.events_df is None or len(self.events_df) == 0:
+                logger.info("CSV is empty, no events exist")
+                return False
 
+            # Filter by date range
+            mask = (self.events_df['start_date'] == start_date) & (self.events_df['end_date'] == end_date)
+
+            # Add location filter if provided
             if location:
-                conditions.append(
-                    FieldCondition(key="location", match=MatchValue(value=location.lower()))
-                )
+                mask = mask & (self.events_df['location'].str.lower() == location.lower())
 
-            search_filter = Filter(must=conditions)
+            matching_events = self.events_df[mask]
+            exists = len(matching_events) > 0
 
-            # Create a dummy query embedding
-            query_embedding = self.embedding_model.embed_query(f"events from {start_date} to {end_date}")
-
-            # Search with filter
-            results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                query_filter=search_filter,
-                limit=1
-            )
-
-            exists = len(results) > 0
-            logger.info(f"Events exist check for {start_date} to {end_date}: {exists}")
+            logger.info(f"Events exist check for {start_date} to {end_date} (location: {location}): {exists} ({len(matching_events)} events)")
             return exists
 
         except Exception as e:
-            logger.error(f"Error checking if events exist: {e}")
+            logger.error(f"Error checking if events exist in CSV: {e}")
             return False
 
     def store_events(
@@ -93,7 +234,7 @@ class VectorStoreService:
         location: Optional[str] = None
     ):
         """
-        Store events in vector store and export to CSV
+        Store events in CSV and rebuild retriever
 
         Args:
             events_data: List of event dictionaries from sources
@@ -113,7 +254,7 @@ class VectorStoreService:
 
                 for event in events:
                     event_record = {
-                        "event_id": f"{source_name}_{len(all_events)}",
+                        "event_id": f"{source_name}_{len(all_events)}_{datetime.now().timestamp()}",
                         "title": event.get("title", ""),
                         "description": event.get("text", ""),
                         "venue": event.get("venue", ""),
@@ -125,6 +266,8 @@ class VectorStoreService:
                         "end_date": end_date,
                         "attending": event.get("attending", ""),
                         "music_types": event.get("music_types", ""),
+                        "venue_lat": event.get("venue_lat", ""),
+                        "venue_lon": event.get("venue_lon", ""),
                         "stored_at": datetime.now().isoformat()
                     }
                     all_events.append(event_record)
@@ -133,50 +276,14 @@ class VectorStoreService:
                 logger.warning("No events to store")
                 return
 
-            # Initialize collection on first use
-            if not self.initialized:
-                logger.info(f"Initializing Qdrant collection...")
-                try:
-                    self.client.delete_collection(self.collection_name)
-                except:
-                    pass
+            # Append to CSV
+            self._append_to_csv(all_events)
 
-                self.client.create_collection(
-                    collection_name=self.collection_name,
-                    vectors_config=VectorParams(
-                        size=self.vector_size,
-                        distance=Distance.COSINE
-                    )
-                )
-                self.initialized = True
-                logger.info(f"Qdrant collection '{self.collection_name}' created")
+            # Reload CSV and rebuild retriever
+            logger.info("Rebuilding retriever with new events...")
+            self._load_and_build_retriever()
 
-            # Create embeddings and points
-            points = []
-            for idx, event in enumerate(all_events):
-                # Create text for embedding
-                embedding_text = f"{event['title']} {event['description']} {event['venue']}"
-
-                # Create embedding
-                embedding = self.embedding_model.embed_query(embedding_text)
-
-                # Create point
-                point = PointStruct(
-                    id=idx,
-                    vector=embedding,
-                    payload=event
-                )
-                points.append(point)
-
-            # Upload to Qdrant
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points
-            )
-            logger.info(f"Stored {len(points)} events in Qdrant")
-
-            # Export to CSV
-            self._export_to_csv(all_events)
+            logger.info(f"Successfully stored {len(all_events)} events and rebuilt retriever")
 
         except Exception as e:
             logger.error(f"Error storing events: {e}")
@@ -246,110 +353,98 @@ class VectorStoreService:
 
         return events
 
-    def _export_to_csv(self, events: List[Dict[str, Any]]):
-        """Export events to CSV file with all metadata"""
+    def _append_to_csv(self, events: List[Dict[str, Any]]):
+        """Append events to CSV file"""
         try:
-            # Define CSV fieldnames
             fieldnames = [
                 "event_id", "title", "description", "venue", "event_date",
                 "url", "source", "location", "start_date", "end_date",
-                "attending", "music_types", "stored_at"
+                "attending", "music_types", "venue_lat", "venue_lon", "stored_at"
             ]
 
-            # Check if file exists to determine if we need to write headers
-            file_exists = Path(self.csv_path).exists()
-
-            # Write to CSV (append mode)
+            # Append to CSV
             with open(self.csv_path, mode='a', newline='', encoding='utf-8') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-                # Write header if file doesn't exist
-                if not file_exists:
-                    writer.writeheader()
 
                 # Write events
                 for event in events:
                     writer.writerow(event)
 
-            logger.info(f"Exported {len(events)} events to CSV: {self.csv_path}")
+            logger.info(f"Appended {len(events)} events to CSV: {self.csv_path}")
 
         except Exception as e:
-            logger.error(f"Error exporting to CSV: {e}")
+            logger.error(f"Error appending to CSV: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
-    def retrieve_events(self, query: str, k: int = 20) -> str:
+    def retrieve_events(
+        self,
+        query: str,
+        k: int = 20,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        location: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Retrieve events from vector store based on semantic search
+        Retrieve events from CSV using semantic search
 
         Args:
             query: User query
             k: Number of results to return
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+            location: Optional location filter
 
         Returns:
-            Formatted string with retrieved events
+            List of event dictionaries with all metadata
         """
-        if not self.initialized:
-            logger.warning("Vector store not initialized, no events to retrieve")
-            return "No events found in cache. Please fetch events first."
+        if self.retriever is None:
+            logger.warning("Retriever not initialized, no events to retrieve")
+            return []
 
         try:
-            # Create query embedding
-            query_embedding = self.embedding_model.embed_query(query)
+            # Use retriever to get relevant documents
+            results = self.retriever.get_relevant_documents(query)
 
-            # Search
-            results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                limit=k
-            )
+            # Filter by metadata if needed
+            filtered_results = []
+            for doc in results[:k]:
+                metadata = doc.metadata
 
-            if not results:
-                return "No events found in stored data"
+                # Apply filters
+                if start_date and metadata.get("start_date") != start_date:
+                    continue
+                if end_date and metadata.get("end_date") != end_date:
+                    continue
+                # Safe location comparison (handle NaN/float values)
+                if location:
+                    loc_value = metadata.get("location", "")
+                    if isinstance(loc_value, str) and loc_value.lower() != location.lower():
+                        continue
+                    elif not isinstance(loc_value, str):
+                        # Skip if location is not a string (NaN, float, etc.)
+                        continue
 
-            # Group by source
-            ra_events = []
-            goout_events = []
+                # Convert to dict format with all metadata
+                event_dict = {
+                    "title": metadata.get("title", "Unknown Title"),
+                    "venue": metadata.get("venue", "TBA"),
+                    "event_date": metadata.get("event_date", "TBA"),
+                    "url": metadata.get("url", ""),
+                    "source": metadata.get("source", "CSV"),
+                    "location": metadata.get("location", ""),
+                    "attending": metadata.get("attending", ""),
+                    "music_types": metadata.get("music_types", ""),
+                    "content": doc.page_content,
+                    "event_id": metadata.get("event_id", "")
+                }
+                filtered_results.append(event_dict)
 
-            for result in results:
-                payload = result.payload
-                source = payload.get("source", "")
-
-                # Reconstruct event text
-                event_text = f"{payload.get('title', '')}\n"
-                event_text += f"📍 {payload.get('venue', '')}\n"
-                event_text += f"📅 {payload.get('event_date', '')}\n"
-
-                if payload.get('attending'):
-                    event_text += f"👥 {payload.get('attending', '')}\n"
-
-                if payload.get('music_types'):
-                    event_text += f"🎵 {payload.get('music_types', '')}\n"
-
-                event_text += f"🔗 {payload.get('url', '')}"
-
-                if "RA" in source:
-                    ra_events.append(event_text)
-                else:
-                    goout_events.append(event_text)
-
-            # Format response
-            response = ""
-
-            if ra_events:
-                response += f"🎵 Resident Advisor Events ({len(ra_events)} events from stored data)\n\n"
-                response += '\n\n'.join(ra_events)
-                response += "\n✅ Found {} events. Visit ra.co for complete details.\n\n".format(len(ra_events))
-
-            if goout_events:
-                response += f"🎉 GO-OUT Events ({len(goout_events)} events from stored data)\n\n"
-                response += '\n\n'.join(goout_events)
-                response += "\n✅ Found {} events. Visit go-out.co for complete details.\n".format(len(goout_events))
-
-            return response
+            logger.info(f"Retrieved {len(filtered_results)} events for query: {query}")
+            return filtered_results
 
         except Exception as e:
             logger.error(f"Error retrieving events: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return f"Error retrieving events: {str(e)}"
+            return []

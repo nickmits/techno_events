@@ -30,6 +30,10 @@ qdrant-client>=1.8.0
 pandas
 pymupdf
 dateparser
+rank-bm25  # For BM25 keyword search in ensemble retriever
+
+# Geolocation and geocoding
+geopy
 
 # Web search
 tavily-python
