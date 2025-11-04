@@ -1,6 +1,7 @@
 """
 Geocoding Service - Convert venue addresses to coordinates and calculate distances
 Uses Nominatim (OpenStreetMap) - FREE, no API key required
+Fallback to Tavily web search for failed geocoding attempts
 """
 
 from geopy.geocoders import Nominatim
@@ -9,6 +10,9 @@ from typing import Optional, Tuple, Dict, Any
 import logging
 import time
 import hashlib
+import re
+import os
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,8 @@ class GeocodingService:
         # Rate limiting: 1 request per second for Nominatim
         self.last_request_time = 0
         self.rate_limit_seconds = 1.0
+        # Tavily API key for fallback geocoding
+        self.tavily_api_key = os.getenv("TAVILY_API_KEY")
 
     def _rate_limit(self):
         """Enforce rate limiting for Nominatim API"""
@@ -38,12 +44,179 @@ class GeocodingService:
 
         self.last_request_time = time.time()
 
-    def geocode_venue(self, venue_address: str) -> Optional[Tuple[float, float]]:
+    def _geocode_with_tavily(self, venue_address: str) -> Optional[Tuple[float, float]]:
         """
-        Convert venue address to coordinates (latitude, longitude)
+        Fallback geocoding using Tavily web search
+        Uses comprehensive search to minimize API calls
 
         Args:
-            venue_address: Full venue address
+            venue_address: Venue name/address
+
+        Returns:
+            Tuple of (latitude, longitude) or None if extraction fails
+        """
+        if not self.tavily_api_key:
+            logger.warning("⚠️ Tavily API key not configured - skipping fallback geocoding")
+            return None
+
+        try:
+            from backend.tools.tavily_search import get_tavily_search_tool
+
+            # Comprehensive search query (targets Google Maps, venue websites, review sites)
+            search_query = f"{venue_address} Athens Greece google maps coordinates location address"
+            logger.info(f"🌐 Tavily fallback: searching for '{venue_address}'")
+
+            # Execute Tavily search with more results for better coverage
+            tavily_tool = get_tavily_search_tool(max_results=5)
+            results = tavily_tool.invoke({"query": search_query})
+
+            # Parse results to extract coordinates
+            coords = self._extract_coords_from_tavily(results, venue_address)
+
+            if coords:
+                logger.info(f"✅ Tavily found coordinates for '{venue_address}': {coords}")
+                return coords
+            else:
+                logger.warning(f"⚠️ Tavily could not find coordinates for '{venue_address}'")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Error in Tavily fallback geocoding: {e}")
+            return None
+
+    def _extract_coords_from_google_maps_url(self, url: str) -> Optional[Tuple[float, float]]:
+        """
+        Extract coordinates from Google Maps URLs
+
+        Handles formats like:
+        - https://www.google.com/maps/place/.../@37.9776,23.7220,15z
+        - https://www.google.com/maps?q=37.9776,23.7220
+        - https://maps.google.com/?ll=37.9776,23.7220
+
+        Args:
+            url: Google Maps URL
+
+        Returns:
+            Tuple of (latitude, longitude) or None
+        """
+        try:
+            # Pattern 1: /@lat,lon,zoom format
+            match = re.search(r'/@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+),\d+z', url)
+            if match:
+                lat, lon = float(match.group(1)), float(match.group(2))
+                if 37.8 <= lat <= 38.2 and 23.5 <= lon <= 24.0:
+                    return (lat, lon)
+
+            # Pattern 2: ?q=lat,lon format
+            match = re.search(r'[?&]q=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)', url)
+            if match:
+                lat, lon = float(match.group(1)), float(match.group(2))
+                if 37.8 <= lat <= 38.2 and 23.5 <= lon <= 24.0:
+                    return (lat, lon)
+
+            # Pattern 3: ll=lat,lon format
+            match = re.search(r'[?&]ll=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)', url)
+            if match:
+                lat, lon = float(match.group(1)), float(match.group(2))
+                if 37.8 <= lat <= 38.2 and 23.5 <= lon <= 24.0:
+                    return (lat, lon)
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Error extracting from Google Maps URL: {e}")
+            return None
+
+    def _extract_coords_from_tavily(self, results: Any, venue_name: str) -> Optional[Tuple[float, float]]:
+        """
+        Extract latitude/longitude from Tavily search results
+
+        Looks for patterns like:
+        - Google Maps URLs with embedded coordinates
+        - "37.9776671, 23.7220567"
+        - "lat: 37.977, lon: 23.722"
+        - "37.977°N 23.722°E"
+
+        Args:
+            results: Tavily search results (string or list)
+            venue_name: Name of venue for logging
+
+        Returns:
+            Tuple of (latitude, longitude) or None
+        """
+        try:
+            # Convert results to string and collect URLs
+            results_text = ""
+            urls = []
+
+            if isinstance(results, list):
+                # Extract both content and URLs from Tavily results
+                for r in results:
+                    if isinstance(r, dict):
+                        url = r.get('url', '')
+                        if 'google.com/maps' in url or 'maps.google.com' in url:
+                            urls.append(url)
+                        results_text += f" {r.get('content', '')} {url} {r.get('title', '')}"
+                    else:
+                        results_text += f" {str(r)}"
+                logger.debug(f"Tavily returned {len(results)} results for '{venue_name}'")
+            else:
+                results_text = str(results)
+
+            # PRIORITY 1: Try extracting from Google Maps URLs first (most reliable)
+            for url in urls:
+                coords = self._extract_coords_from_google_maps_url(url)
+                if coords:
+                    logger.info(f"✅ Tavily found coordinates for '{venue_name}' from Google Maps URL: {coords}")
+                    return coords
+
+            # PRIORITY 2: Try text-based coordinate patterns
+            patterns = [
+                # Pattern 1: Google Maps URL format "@37.9776,23.7220,15z" (in text)
+                r'@(\d{2}\.\d{4,}),(\d{2}\.\d{4,})',
+                # Pattern 2: "lat: 37.977, lon: 23.722" or "latitude: 37.977, longitude: 23.722"
+                r'lat(?:itude)?[:\s]+(\d{2}\.\d{4,})[,\s]+lon(?:gitude)?[:\s]+(\d{2}\.\d{4,})',
+                # Pattern 3: "37.977°N 23.722°E" or "37.977° N, 23.722° E"
+                r'(\d{2}\.\d{4,})\s*°?\s*N[,\s]+(\d{2}\.\d{4,})\s*°?\s*E',
+                # Pattern 4: Plain coordinates "37.9776671, 23.7220567"
+                r'(\d{2}\.\d{4,})\s*,\s*(\d{2}\.\d{4,})',
+            ]
+
+            for idx, pattern in enumerate(patterns, 1):
+                match = re.search(pattern, results_text, re.IGNORECASE)
+                if match:
+                    try:
+                        lat, lon = float(match.group(1)), float(match.group(2))
+
+                        # Validate coordinates are in Athens area (roughly)
+                        # Athens: lat ~37.8-38.2, lon ~23.5-24.0
+                        if 37.8 <= lat <= 38.2 and 23.5 <= lon <= 24.0:
+                            logger.info(f"✅ Tavily found coordinates for '{venue_name}': ({lat}, {lon}) using pattern {idx}")
+                            return (lat, lon)
+                        else:
+                            logger.debug(f"Found coordinates ({lat}, {lon}) but outside Athens area (pattern {idx})")
+                            continue  # Try next pattern
+                    except (ValueError, IndexError) as e:
+                        logger.debug(f"Failed to parse coordinates with pattern {idx}: {e}")
+                        continue
+
+            # Log sample of search results for debugging
+            sample = results_text[:200] if len(results_text) > 200 else results_text
+            logger.warning(f"⚠️ Could not extract valid Athens coordinates for '{venue_name}'. Sample: {sample}...")
+            return None
+
+        except Exception as e:
+            logger.error(f"❌ Error extracting coordinates from Tavily results: {e}")
+            return None
+
+    def geocode_venue(self, venue_address: str, use_tavily_fallback: bool = True) -> Optional[Tuple[float, float]]:
+        """
+        Convert venue address to coordinates (latitude, longitude)
+        Uses Nominatim (OpenStreetMap) with optional Tavily fallback
+
+        Args:
+            venue_address: Full venue address (can include venue name)
+            use_tavily_fallback: If True, use Tavily when Nominatim fails
 
         Returns:
             Tuple of (latitude, longitude) or None if geocoding fails
@@ -54,29 +227,58 @@ class GeocodingService:
             logger.debug(f"Cache hit for venue: {venue_address}")
             return self.geocode_cache[cache_key]
 
-        try:
-            # Add "Athens, Greece" to improve accuracy
-            search_query = f"{venue_address}, Athens, Greece"
+        # Try multiple search strategies with Nominatim
+        search_strategies = []
 
-            # Rate limiting
-            self._rate_limit()
+        # Strategy 1: If address contains comma, try the address part only (after first comma)
+        if ',' in venue_address:
+            address_only = ','.join(venue_address.split(',')[1:]).strip()
+            if address_only:
+                search_strategies.append(f"{address_only}, Athens, Greece")
 
-            # Geocode the address
-            logger.info(f"Geocoding venue: {search_query}")
-            location = self.geolocator.geocode(search_query, timeout=10)
+        # Strategy 2: Original address with Athens, Greece appended
+        if "athens" not in venue_address.lower():
+            search_strategies.append(f"{venue_address}, Athens, Greece")
+        else:
+            search_strategies.append(venue_address)
 
-            if location:
-                coords = (location.latitude, location.longitude)
+        # Strategy 3: Just the venue address as-is (if different from strategy 2)
+        if venue_address not in search_strategies:
+            search_strategies.append(venue_address)
+
+        # Try each strategy
+        for idx, search_query in enumerate(search_strategies, 1):
+            try:
+                # Rate limiting
+                self._rate_limit()
+
+                # Geocode the address
+                logger.debug(f"Nominatim attempt {idx}/{len(search_strategies)}: {search_query}")
+                location = self.geolocator.geocode(search_query, timeout=10)
+
+                if location:
+                    coords = (location.latitude, location.longitude)
+                    self.geocode_cache[cache_key] = coords
+                    logger.info(f"✅ Geocoded '{venue_address}' → {coords} (strategy {idx})")
+                    return coords
+
+            except Exception as e:
+                logger.debug(f"Strategy {idx} failed: {e}")
+                continue
+
+        # All Nominatim strategies failed
+        logger.warning(f"⚠️ Nominatim could not geocode venue: {venue_address}")
+
+        # Try Tavily fallback if enabled
+        if use_tavily_fallback:
+            logger.info(f"🌐 Attempting Tavily fallback for '{venue_address}'")
+            coords = self._geocode_with_tavily(venue_address)
+            if coords:
+                # Cache the result
                 self.geocode_cache[cache_key] = coords
-                logger.info(f"✅ Geocoded '{venue_address}' → {coords}")
                 return coords
-            else:
-                logger.warning(f"⚠️ Could not geocode venue: {venue_address}")
-                return None
 
-        except Exception as e:
-            logger.error(f"❌ Error geocoding venue '{venue_address}': {e}")
-            return None
+        return None
 
     def calculate_distance(
         self,

@@ -2,8 +2,10 @@
 Events Service - Integrates LangGraph multi-agent system for event discovery
 """
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command, interrupt
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
@@ -64,6 +66,7 @@ class AgentState(TypedDict):
     source: str  # "csv", "web", or "web_search"
     final_response: Optional[str]  # Generated conversational response
     is_valid_query: bool  # Whether query is about events
+    interrupt: Optional[dict]  # Interrupt payload for human-in-the-loop
 
 
 class EventsService:
@@ -76,6 +79,7 @@ class EventsService:
 
         self.model = ChatOpenAI(model="gpt-4o-mini")
         self.graph = None
+        self.checkpointer = MemorySaver()  # For interrupt/resume
         self.vector_store = VectorStoreService()
         self.geocoding_service = GeocodingService()  # Initialize geocoding service
         self.tools = self._get_tool_belt()  # Initialize tool belt
@@ -86,15 +90,17 @@ class EventsService:
         return [fetch_ra_events, fetch_goout_events]
 
     async def _build_graph(self):
-        """Build the multi-agent graph - SIMPLIFIED like agent_graph_with_helpfulness.py"""
+        """Build the multi-agent graph with human-in-the-loop for location"""
 
         graph = StateGraph(AgentState)
 
         # Create ToolNode for automatic tool execution
         tool_node = ToolNode(self.tools)
 
-        # Add nodes (SIMPLIFIED - nodes do work, functions route)
+        # Add nodes
         graph.add_node("ParseDates", self._parse_dates_node)
+        graph.add_node("CheckCompleteness", self._check_completeness_node)
+        graph.add_node("AskForLocation", self._ask_for_location_node)
         graph.add_node("CSVRetrieval", self._csv_retrieval_node)
         graph.add_node("WebAgent", self._web_agent_node)  # LLM with tools bound
         graph.add_node("CallTools", tool_node)  # ToolNode executes automatically
@@ -106,11 +112,23 @@ class EventsService:
         # Set entry point
         graph.set_entry_point("ParseDates")
 
-        # Routing function (not a node!) - LLM decides CSV or Web
-        def route_data_source(state: AgentState) -> str:
-            """Smart routing: decide CSV or Web based on cache status and query content"""
+        # Route from ParseDates to CheckCompleteness
+        graph.add_edge("ParseDates", "CheckCompleteness")
+
+        # Routing function - check if we need to ask for location, or route to data source
+        def route_completeness_check(state: AgentState) -> str:
+            """Check if we have dates but no location → ask for location, otherwise route to CSV/Web"""
             start_date = state.get("start_date")
             end_date = state.get("end_date")
+            user_lat = state.get("user_lat")
+            user_lon = state.get("user_lon")
+
+            # If we have dates but no user location, ask for it
+            if (start_date or end_date) and (user_lat is None or user_lon is None):
+                logger.info("📍 Have dates but no location → AskForLocation")
+                return "ask_location"
+
+            # Otherwise, do data source routing directly
             location = "athens"
 
             # CASE 1: If dates are provided, check if CSV has data for those exact dates
@@ -131,11 +149,49 @@ class EventsService:
             logger.info("🌐 Routing: CSV empty → WebAgent")
             return "web"
 
-        # Route from ParseDates to CSV or Web
+        # Route from CheckCompleteness to AskForLocation, CSVRetrieval, or WebAgent
         graph.add_conditional_edges(
-            "ParseDates",
-            route_data_source,
-            {"csv": "CSVRetrieval", "web": "WebAgent"}
+            "CheckCompleteness",
+            route_completeness_check,
+            {
+                "ask_location": "AskForLocation",
+                "csv": "CSVRetrieval",
+                "web": "WebAgent"
+            }
+        )
+
+        # Routing function for after AskForLocation
+        def route_after_location(state: AgentState) -> str:
+            """Route to data source after getting location"""
+            start_date = state.get("start_date")
+            end_date = state.get("end_date")
+            location = "athens"
+
+            # Same logic as route_data_source
+            if start_date and end_date:
+                events_exist = self.vector_store.check_events_exist(start_date, end_date, location)
+                if events_exist:
+                    logger.info("📊 Routing after location: CSV has data → CSVRetrieval")
+                    return "csv"
+                else:
+                    logger.info("🌐 Routing after location: No CSV data → WebAgent")
+                    return "web"
+
+            if self.vector_store.events_df is not None and len(self.vector_store.events_df) > 0:
+                logger.info("📊 Routing after location: CSV has events → CSVRetrieval")
+                return "csv"
+
+            logger.info("🌐 Routing after location: CSV empty → WebAgent")
+            return "web"
+
+        # Route from AskForLocation to CSVRetrieval or WebAgent
+        graph.add_conditional_edges(
+            "AskForLocation",
+            route_after_location,
+            {
+                "csv": "CSVRetrieval",
+                "web": "WebAgent"
+            }
         )
 
         # CSV path: CSVRetrieval → check if has events → SortByDistance or WebAgent
@@ -206,7 +262,7 @@ class EventsService:
         # After response, END
         graph.add_edge("GenerateResponse", END)
 
-        return graph.compile()
+        return graph.compile(checkpointer=self.checkpointer)
 
     def _validate_query_node(self, state: AgentState) -> Dict[str, Any]:
         """
@@ -375,6 +431,65 @@ Respond with JSON only:"""
             logger.error(f"Error parsing dates: {e}")
             # If parsing fails, continue without dates
             return {"messages": []}
+
+    def _check_completeness_node(self, state: AgentState) -> Dict[str, Any]:
+        """
+        Check if we have dates AND user location.
+        If dates exist but no location, we need to ask for location.
+        """
+        start_date = state.get("start_date")
+        end_date = state.get("end_date")
+        user_lat = state.get("user_lat")
+        user_lon = state.get("user_lon")
+
+        logger.info(f"Checking completeness: dates={start_date}/{end_date}, location={user_lat}/{user_lon}")
+
+        # No changes needed, just pass through
+        return {"messages": []}
+
+    def _ask_for_location_node(self, state: AgentState) -> Dict[str, Any]:
+        """
+        Ask user for location using interrupt() pattern.
+        After user responds, geocode their location and update state.
+        """
+        start_date = state.get("start_date")
+        end_date = state.get("end_date")
+
+        logger.info(f"📍 Asking user for location (dates: {start_date} to {end_date})")
+
+        # Prepare interrupt payload
+        location_request = f"Great! I found events from {start_date} to {end_date}. Where are you located in Athens? (e.g., Syntagma Square, Monastiraki, Exarchia)"
+
+        interrupt_payload = {
+            "type": "location_request",
+            "message": location_request,
+            "dates": {"start": start_date, "end": end_date}
+        }
+
+        # Interrupt and ask for location (this will cause graph to return on first call)
+        user_location_input = interrupt(interrupt_payload)
+
+        logger.info(f"✅ User provided location: {user_location_input}")
+
+        # Geocode the user's location
+        user_coords = self.geocoding_service.geocode_venue(user_location_input)
+
+        if user_coords:
+            user_lat, user_lon = user_coords
+            logger.info(f"📍 Geocoded user location: ({user_lat}, {user_lon})")
+        else:
+            logger.warning(f"⚠️ Could not geocode user location: {user_location_input}")
+            # Use default (Syntagma Square)
+            user_lat, user_lon = 37.9755, 23.7348
+            logger.info(f"📍 Using default location (Syntagma): ({user_lat}, {user_lon})")
+
+        # Update state with geocoded location (clear interrupt after resume)
+        return {
+            "user_lat": user_lat,
+            "user_lon": user_lon,
+            "interrupt": None,  # Clear interrupt after resume
+            "messages": []
+        }
 
     # OLD NODES REMOVED - Simplified to routing functions in _build_graph()
     # _supervisor_node → route_data_source() function
@@ -853,38 +968,89 @@ IMPORTANT: You MUST call both tools to provide complete results!"""
         except Exception as e:
             logger.error(f"❌ Error storing events: {e}")
 
-        return {"messages": []}
+        # Parse tool messages to extract structured events for downstream processing
+        parsed_events = self._parse_tool_messages(tool_messages, "")
+        logger.info(f"✅ Populated {len(parsed_events)} events for distance calculation")
+
+        # Return populated state so SortByDistance can process the events
+        return {
+            "retrieved_events": parsed_events,
+            "events_count": len(parsed_events),
+            "source": "web",
+            "messages": []
+        }
 
     def _sort_by_distance_node(self, state: AgentState) -> Dict[str, Any]:
         """
-        Sort events by distance from user location (if provided)
+        Geocode venues and calculate distances from user location (if provided).
+        Always geocodes venues to get lat/lon, calculates distances only if user location available.
         """
         user_lat = state.get("user_lat")
         user_lon = state.get("user_lon")
         retrieved_events = state.get("retrieved_events", [])
 
-        # If no user location or no events, skip sorting
-        if not user_lat or not user_lon or not retrieved_events:
-            logger.info("⏭️ Skipping distance sorting (no user location or no events)")
+        # If no events, skip
+        if not retrieved_events:
+            logger.info("⏭️ No events to process")
             return {"messages": []}
 
         try:
-            logger.info(f"📍 Sorting {len(retrieved_events)} events by distance from user location ({user_lat}, {user_lon})")
+            # CASE 1: User location is available → geocode venues AND calculate distances
+            if user_lat and user_lon:
+                logger.info(f"📍 Geocoding {len(retrieved_events)} venues and calculating distances from user location ({user_lat}, {user_lon})")
 
-            # Sort events by distance
-            user_coords = (user_lat, user_lon)
-            sorted_events = self.geocoding_service.sort_events_by_distance(retrieved_events, user_coords)
+                # Sort events by distance (also geocodes venues and adds distance data)
+                user_coords = (user_lat, user_lon)
+                sorted_events = self.geocoding_service.sort_events_by_distance(retrieved_events, user_coords)
 
-            logger.info(f"✅ Events sorted by distance (closest: {sorted_events[0].get('distance_km', 'N/A')} km)")
+                closest_distance = next((e.get('distance_km') for e in sorted_events if e.get('distance_km') is not None), 'N/A')
+                logger.info(f"✅ Events sorted by distance (closest: {closest_distance} km)")
 
-            return {
-                "retrieved_events": sorted_events,
-                "messages": []
-            }
+                return {
+                    "retrieved_events": sorted_events,
+                    "messages": []
+                }
+
+            # CASE 2: No user location → geocode venues only (no distance calculation)
+            else:
+                logger.info(f"📍 Geocoding {len(retrieved_events)} venues (no user location for distance calculation)")
+
+                # Geocode each venue to get lat/lon (but skip distance calculation)
+                geocoded_events = []
+                for event in retrieved_events:
+                    venue_address = event.get("venue", "")
+
+                    if venue_address and venue_address != "TBA":
+                        # Geocode the venue
+                        venue_coords = self.geocoding_service.geocode_venue(venue_address)
+
+                        if venue_coords:
+                            event["venue_lat"] = venue_coords[0]
+                            event["venue_lon"] = venue_coords[1]
+                        else:
+                            event["venue_lat"] = None
+                            event["venue_lon"] = None
+                    else:
+                        event["venue_lat"] = None
+                        event["venue_lon"] = None
+
+                    # Keep distance fields as None (no user location)
+                    event["distance_km"] = None
+                    event["drive_time_min"] = None
+                    event["walk_time_min"] = None
+
+                    geocoded_events.append(event)
+
+                logger.info(f"✅ Geocoded {len([e for e in geocoded_events if e.get('venue_lat')])} venues")
+
+                return {
+                    "retrieved_events": geocoded_events,
+                    "messages": []
+                }
 
         except Exception as e:
-            logger.error(f"❌ Error sorting events by distance: {e}")
-            # Return unsorted events if sorting fails
+            logger.error(f"❌ Error in distance/geocoding node: {e}")
+            # Return original events if processing fails
             return {"messages": []}
 
 
@@ -895,11 +1061,11 @@ IMPORTANT: You MUST call both tools to provide complete results!"""
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         days_ahead: Optional[int] = 30,
-        user_lat: Optional[float] = None,
-        user_lon: Optional[float] = None
+        thread_id: Optional[str] = None,
+        resume_value: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Fetch events using the LangGraph multi-agent system
+        Fetch events using the LangGraph multi-agent system with human-in-the-loop
         ATHENS-ONLY: Location is always 'athens', parameter kept for API compatibility
 
         Args:
@@ -908,11 +1074,11 @@ IMPORTANT: You MUST call both tools to provide complete results!"""
             start_date: Optional start date (YYYY-MM-DD)
             end_date: Optional end date (YYYY-MM-DD)
             days_ahead: Days ahead if dates not specified
-            user_lat: User's latitude for distance-based sorting
-            user_lon: User's longitude for distance-based sorting
+            thread_id: Thread ID for checkpoint/resume (human-in-the-loop)
+            resume_value: User's response when resuming from interrupt (e.g., location)
 
         Returns:
-            Dictionary containing messages from all agents
+            Dictionary containing messages from all agents, or interrupt payload
         """
         try:
             # Build graph if not already built
@@ -923,6 +1089,22 @@ IMPORTANT: You MUST call both tools to provide complete results!"""
             # ATHENS-ONLY: Always use athens, ignore location parameter
             location = "athens"
 
+            # Configure checkpoint with thread_id
+            config = {"configurable": {"thread_id": thread_id}} if thread_id else {}
+
+            # If resuming from interrupt, provide the resume value
+            if resume_value and thread_id:
+                logger.info(f"🔄 Resuming thread {thread_id} with value: {resume_value}")
+
+                # Resume the graph by invoking with None (checkpointer handles resume)
+                # The resume_value is passed as input to the interrupted node
+                result = await self.graph.ainvoke(
+                    Command(resume=resume_value),
+                    config=config
+                )
+
+                return result
+
             # Don't add "in Athens" to query since it's implicit
             enhanced_query = query
             if start_date and end_date:
@@ -932,21 +1114,45 @@ IMPORTANT: You MUST call both tools to provide complete results!"""
 
             logger.info(f"Executing Athens query: {enhanced_query}")
 
-            # Execute query through graph with state
-            result = await self.graph.ainvoke({
-                "messages": [HumanMessage(content=enhanced_query)],
-                "start_date": start_date,
-                "end_date": end_date,
-                "location": location,  # Always "athens"
-                "user_lat": user_lat,  # User location for distance sorting
-                "user_lon": user_lon,  # User location for distance sorting
-                "next": "",
-                "retrieved_events": None,
-                "events_count": 0,
-                "source": "",
-                "final_response": None,
-                "is_valid_query": True
-            })
+            # Execute query through graph with state and config
+            result = await self.graph.ainvoke(
+                {
+                    "messages": [HumanMessage(content=enhanced_query)],
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "location": location,  # Always "athens"
+                    "user_lat": None,  # Will be set by AskForLocation node
+                    "user_lon": None,  # Will be set by AskForLocation node
+                    "next": "",
+                    "retrieved_events": None,
+                    "events_count": 0,
+                    "source": "",
+                    "final_response": None,
+                    "is_valid_query": True,
+                    "interrupt": None
+                },
+                config=config
+            )
+
+            # Check if graph was interrupted (final_response will be None if interrupted)
+            # This happens when the graph stops before reaching GenerateResponse node
+            if result.get("final_response") is None:
+                # Graph was interrupted - construct interrupt payload
+                logger.info(f"🛑 Graph interrupted, waiting for user input")
+
+                # Create interrupt payload (for location request)
+                interrupt_payload = {
+                    "type": "location_request",
+                    "message": f"Great! I found events from {result.get('start_date')} to {result.get('end_date')}. Where are you located in Athens? (e.g., Syntagma Square, Monastiraki, Exarchia)",
+                    "dates": {
+                        "start": result.get("start_date"),
+                        "end": result.get("end_date")
+                    }
+                }
+
+                # Return result with interrupt payload
+                result["interrupt"] = interrupt_payload
+                return result
 
             return result
 

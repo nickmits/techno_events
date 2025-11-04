@@ -74,6 +74,13 @@ def fetch_ra_events(location: str = "greece", start_date: str = None, end_date: 
                   id
                   name
                   contentUrl
+                  address
+                  area {
+                    name
+                    country {
+                      name
+                    }
+                  }
                 }
               }
             }
@@ -144,11 +151,23 @@ def fetch_ra_events(location: str = "greece", start_date: str = None, end_date: 
             start_time = event.get("startTime", "")
             venue_info = event.get("venue", {})
             venue_name = venue_info.get("name", "Unknown Venue")
+            venue_address = venue_info.get("address", "")
+            venue_area = venue_info.get("area", {})
+            area_name = venue_area.get("name", "") if venue_area else ""
+
+            # Build full venue string: "Venue Name, Address, City" or just "Venue Name" if no address
+            if venue_address and area_name:
+                full_venue = f"{venue_name}, {venue_address}, {area_name}"
+            elif venue_address:
+                full_venue = f"{venue_name}, {venue_address}"
+            else:
+                full_venue = venue_name
+
             event_url = f"https://ra.co{event.get('contentUrl', '')}"
             attending = event.get("attending", 0)
 
             result += f"{idx}. {title}\n"
-            result += f"   📍 {venue_name}\n"
+            result += f"   📍 {full_venue}\n"
             result += f"   📅 {date[:10]}"  # Just the date part
             if start_time:
                 result += f" at {start_time[11:16]}"  # Extract time HH:MM

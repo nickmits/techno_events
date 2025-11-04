@@ -12,13 +12,11 @@ const apiClient = axios.create({
 
 export async function fetchEvents(
   query: string,
-  user_location?: string,
   filters: Partial<EventsRequest> = {}
 ): Promise<EventsResponse> {
   try {
     const response = await apiClient.post<EventsResponse>('/api/events', {
       query,
-      user_location,
       ...filters,
     });
     return response.data;

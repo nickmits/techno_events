@@ -67,8 +67,8 @@ class VectorStoreService:
                 self.retriever = None
                 return
 
-            # Load CSV
-            self.events_df = pd.read_csv(self.csv_path)
+            # Load CSV with error handling for corrupted lines
+            self.events_df = pd.read_csv(self.csv_path, on_bad_lines='skip')
 
             if len(self.events_df) == 0:
                 logger.info("CSV has no events yet. Retriever will be built after first data fetch.")
@@ -253,10 +253,15 @@ Location: {row['location']}
                 events = self._parse_events_from_content(content, source_name)
 
                 for event in events:
+                    # Clean description to prevent CSV corruption
+                    description = event.get("text", "")
+                    if description:
+                        description = description.replace('\n', ' ').replace('\r', ' ')
+
                     event_record = {
                         "event_id": f"{source_name}_{len(all_events)}_{datetime.now().timestamp()}",
                         "title": event.get("title", ""),
-                        "description": event.get("text", ""),
+                        "description": description,
                         "venue": event.get("venue", ""),
                         "event_date": event.get("date", ""),
                         "url": event.get("url", ""),
@@ -301,6 +306,7 @@ Location: {row['location']}
         Returns:
             List of event dictionaries
         """
+        logger.info(f"🔵 _parse_events_from_content called for {source}, content length: {len(content)}")
         events = []
 
         try:
@@ -347,6 +353,15 @@ Location: {row['location']}
             if current_event:
                 current_event["text"] = '\n'.join(current_text)
                 events.append(current_event)
+
+            logger.info(f"🟢 Before cleaning: {len(events)} events parsed")
+            # Clean descriptions to prevent CSV corruption
+            for event in events:
+                if "text" in event:
+                    original = event["text"]
+                    # Replace newlines with spaces to avoid breaking CSV format
+                    event["text"] = event["text"].replace('\n', ' ').replace('\r', ' ')
+                    logger.info(f"🧹 Cleaned description: {len(original)} chars → {len(event['text'])} chars (had newlines: {chr(10) in original})")
 
         except Exception as e:
             logger.error(f"Error parsing events from content: {e}")

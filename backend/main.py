@@ -58,7 +58,8 @@ class EventsRequest(BaseModel):
     start_date: Optional[str] = Field(None, description="Start date in YYYY-MM-DD format", example="2025-11-01")
     end_date: Optional[str] = Field(None, description="End date in YYYY-MM-DD format", example="2025-11-05")
     days_ahead: Optional[int] = Field(30, description="Days ahead if dates not specified", ge=1, le=90)
-    user_location: Optional[str] = Field(None, description="User's location as text (e.g., 'Syntagma Square', 'Monastiraki')", example="Syntagma Square")
+    thread_id: Optional[str] = Field(None, description="Thread ID for checkpoint/resume (for human-in-the-loop)")
+    resume_value: Optional[str] = Field(None, description="User's response when resuming from an interrupt (e.g., location)")
 
 
 class Event(BaseModel):
@@ -93,6 +94,8 @@ class EventsResponse(BaseModel):
     sources: List[EventSource] = Field(default_factory=list, description="Event data from different sources")
     total_sources: int = Field(..., description="Number of sources queried")
     timestamp: str = Field(..., description="Query execution timestamp")
+    interrupt: Optional[dict] = Field(None, description="Interrupt payload if graph is waiting for user input")
+    thread_id: Optional[str] = Field(None, description="Thread ID for resuming the conversation")
 
 
 @app.get("/")
@@ -108,44 +111,61 @@ async def root():
 @app.post("/api/events", response_model=EventsResponse)
 async def fetch_events(request: EventsRequest):
     """
-    Fetch Athens events using LangGraph multi-agent system
+    Fetch Athens events using LangGraph multi-agent system with human-in-the-loop
 
     ATHENS-ONLY: This endpoint only searches for events in Athens, Greece.
     Queries are intelligently routed to either cached CSV data or web APIs
     (Resident Advisor and GO-OUT) for Athens events.
 
+    Human-in-the-loop: If dates are specified but location is missing, the system
+    will interrupt and ask for user location. Use thread_id and resume_value to
+    continue the conversation.
+
     Args:
-        request: EventsRequest with query and optional filters (location ignored)
+        request: EventsRequest with query, optional thread_id and resume_value
 
     Returns:
-        EventsResponse with conversational response about Athens events
+        EventsResponse with conversational response or interrupt request
     """
     try:
         logger.info(f"Processing events query: {request.query}")
 
-        # Geocode user location if provided
-        user_lat, user_lon = None, None
-        if request.user_location:
-            logger.info(f"Geocoding user location: {request.user_location}")
-            user_coords = geocoding_service.geocode_venue(request.user_location)
-            if user_coords:
-                user_lat, user_lon = user_coords
-                logger.info(f"✅ User location geocoded: {user_lat}, {user_lon}")
-            else:
-                logger.warning(f"⚠️ Could not geocode user location: {request.user_location}")
+        # Generate thread_id if not provided (for checkpoint management)
+        import uuid
+        thread_id = request.thread_id or str(uuid.uuid4())
+        logger.info(f"Using thread_id: {thread_id}")
 
-        # Execute query through LangGraph
+        # Execute query through LangGraph with checkpoint support
         result = await events_service.fetch_events(
             query=request.query,
             location=request.location,
             start_date=request.start_date,
             end_date=request.end_date,
             days_ahead=request.days_ahead,
-            user_lat=user_lat,
-            user_lon=user_lon
+            thread_id=thread_id,
+            resume_value=request.resume_value
         )
 
-        # Extract data from result
+        # Check if result contains an interrupt (human-in-the-loop)
+        interrupt_payload = result.get("interrupt")
+
+        if interrupt_payload:
+            # Graph is waiting for user input
+            logger.info(f"🛑 Interrupt detected: {interrupt_payload}")
+
+            return EventsResponse(
+                query=request.query,
+                source="interrupt",
+                intro=interrupt_payload.get("message", "Please provide additional information."),
+                events=[],
+                sources=[],
+                total_sources=0,
+                timestamp=datetime.utcnow().isoformat(),
+                interrupt=interrupt_payload,
+                thread_id=thread_id
+            )
+
+        # Extract data from completed result
         final_response = result.get("final_response", "")
         retrieved_events = result.get("retrieved_events", [])
         source_type = result.get("source", "unknown")
@@ -173,7 +193,7 @@ async def fetch_events(request: EventsRequest):
 
         # Build sources list (for backwards compatibility)
         sources = []
-        for msg in result["messages"][1:]:  # Skip initial user message
+        for msg in result.get("messages", [])[1:]:  # Skip initial user message
             if hasattr(msg, 'name') and hasattr(msg, 'content'):
                 if msg.name in ["RAEvents", "GOOUTEvents"]:
                     sources.append(
@@ -187,7 +207,8 @@ async def fetch_events(request: EventsRequest):
             events=structured_events,
             sources=sources,
             total_sources=len(sources) + (1 if final_response else 0),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.utcnow().isoformat(),
+            thread_id=thread_id
         )
 
         logger.info(f"Successfully generated conversational response with {len(sources)} sources")
