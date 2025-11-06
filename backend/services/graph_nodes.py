@@ -164,7 +164,7 @@ If no specific dates mentioned, use null (don't assume dates)."""
         }
 
     def csv_retrieval_node(self, state: AgentState) -> Dict[str, Any]:
-        """CSV Retrieval Node - searches Athens events from vector store with filtering"""
+        """CSV Retrieval Node - retrieves ALL events from CSV for the date range (simple date filtering)"""
         messages = state["messages"]
         user_query = messages[0].content if messages else ""
 
@@ -172,15 +172,17 @@ If no specific dates mentioned, use null (don't assume dates)."""
         end_date = state.get("end_date")
         location = "athens"
 
-        logger.info(f"Retrieving events from vector store for query: {user_query}")
+        logger.info(f"Retrieving ALL events from CSV for dates: {start_date} to {end_date}")
 
-        events = self.vector_store.retrieve_events(
-            query=user_query,
-            k=30,  # Get more initially for filtering
+        # Use direct date filtering instead of semantic search
+        # This ensures we get ALL events for the date range without semantic filtering
+        events = self.vector_store.get_events_by_date_range(
             start_date=start_date,
             end_date=end_date,
             location=location
         )
+
+        logger.info(f"Found {len(events)} events in CSV for date range")
 
         # Apply Athens-only filtering (in case CSV has non-Athens events)
         athens_events = self._filter_athens_only(events)
@@ -188,8 +190,8 @@ If no specific dates mentioned, use null (don't assume dates)."""
         # Apply deduplication
         unique_events = self._deduplicate_events(athens_events)
 
-        # Limit to top 20 after filtering
-        final_events = unique_events[:20]
+        # Return ALL unique events
+        final_events = unique_events
 
         logger.info(f"Retrieved {len(final_events)} unique Athens events from CSV (after filtering)")
 
@@ -342,9 +344,8 @@ IMPORTANT: You MUST call both tools!"""
         return athens_events
 
     def storage_node(self, state: AgentState) -> Dict[str, Any]:
-        """Store fetched events from RA/GO-OUT in vector store CSV, then retrieve via vector search"""
+        """Store fetched events from RA/GO-OUT in vector store CSV (merges with existing, adds only new events)"""
         messages = state.get("messages", [])
-        user_query = messages[0].content if messages else ""
         start_date = state.get("start_date", "")
         end_date = state.get("end_date", "")
         location = state.get("location", "athens")
@@ -388,27 +389,14 @@ IMPORTANT: You MUST call both tools!"""
                 end_date=end_date,
                 location=location
             )
-            logger.info(f"✅ Successfully stored events in CSV and rebuilt vector store")
+            logger.info(f"✅ Successfully stored new events in CSV (merged with existing)")
         except Exception as e:
             logger.error(f"❌ Error storing events: {e}")
 
-        # Now retrieve from vector store using semantic search (ensures consistency)
-        logger.info(f"🔍 Retrieving stored events from vector store using semantic search")
-        retrieved_events = self.vector_store.retrieve_events(
-            query=user_query,
-            k=20,
-            start_date=start_date,
-            end_date=end_date,
-            location=location
-        )
-
-        logger.info(f"✅ Retrieved {len(retrieved_events)} events from vector store for response")
-
+        # Pass signal to CSVRetrieval to use date-based filtering (not semantic search)
         return {
-            "retrieved_events": retrieved_events,
-            "events_count": len(retrieved_events),
-            "source": "csv",  # Mark as csv since we retrieved from vector store
-            "messages": []
+            "messages": [],
+            "source": "web"  # Signal that events came from web, need full CSV retrieval
         }
 
     def web_search_agent_node(self, state: AgentState) -> Dict[str, Any]:

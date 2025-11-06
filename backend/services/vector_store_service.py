@@ -246,7 +246,7 @@ Location: {row['location']}
 
             # 1. BM25 Retriever (keyword-based)
             bm25_retriever = BM25Retriever.from_documents(documents)
-            bm25_retriever.k = 10
+            bm25_retriever.k = 100  # Increased from 10 to get more results
 
             # 2. Semantic Vector Store with cached embeddings
             cached_embeddings = CachedEmbeddings(self.embedding_model, self)
@@ -262,7 +262,7 @@ Location: {row['location']}
 
             # 3. Multi-Query Retriever (generates multiple search queries)
             multi_query_retriever = MultiQueryRetriever.from_llm(
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 15}),
+                retriever=vectorstore.as_retriever(search_kwargs={"k": 100}),  # Increased from 15
                 llm=chat_model
             )
 
@@ -580,9 +580,9 @@ Location: {row['location']}
             # Use retriever to get relevant documents
             results = self.retriever.get_relevant_documents(query)
 
-            # Filter by metadata if needed
+            # Filter by metadata if needed - FILTER FIRST, then slice
             filtered_results = []
-            for doc in results[:k]:
+            for doc in results:  # Removed [:k] - filter all results first
                 metadata = doc.metadata
 
                 # Apply filters
@@ -614,11 +614,74 @@ Location: {row['location']}
                 }
                 filtered_results.append(event_dict)
 
-            logger.info(f"Retrieved {len(filtered_results)} events for query: {query}")
+            # Now apply k limit after filtering
+            filtered_results = filtered_results[:k]
+
+            logger.info(f"Retrieved {len(filtered_results)} events for query: {query} (from {len(results)} total)")
             return filtered_results
 
         except Exception as e:
             logger.error(f"Error retrieving events: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+
+    def get_events_by_date_range(
+        self,
+        start_date: str,
+        end_date: str,
+        location: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get ALL events from CSV by date range (simple filtering, no semantic search)
+
+        Args:
+            start_date: Start date (YYYY-MM-DD)
+            end_date: End date (YYYY-MM-DD)
+            location: Optional location filter
+
+        Returns:
+            List of all event dictionaries matching the date range
+        """
+        if self.events_df is None or len(self.events_df) == 0:
+            logger.warning("No events in CSV")
+            return []
+
+        try:
+            # Filter by event_date column
+            filtered_df = self.events_df[
+                (self.events_df["event_date"] >= start_date) &
+                (self.events_df["event_date"] <= end_date)
+            ]
+
+            # Filter by location if specified
+            if location:
+                filtered_df = filtered_df[
+                    filtered_df["location"].str.lower() == location.lower()
+                ]
+
+            # Convert to list of dicts
+            events = []
+            for _, row in filtered_df.iterrows():
+                event_dict = {
+                    "title": row.get("title", "Unknown Title"),
+                    "venue": row.get("venue", "TBA"),
+                    "event_date": row.get("event_date", "TBA"),
+                    "url": row.get("url", ""),
+                    "source": row.get("source", "CSV"),
+                    "location": row.get("location", ""),
+                    "attending": row.get("attending", ""),
+                    "music_types": row.get("music_types", ""),
+                    "content": row.get("description", ""),
+                    "event_id": row.get("event_id", "")
+                }
+                events.append(event_dict)
+
+            logger.info(f"Found {len(events)} events for date range {start_date} to {end_date}")
+            return events
+
+        except Exception as e:
+            logger.error(f"Error getting events by date range: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return []

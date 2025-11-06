@@ -67,7 +67,6 @@ class EventsService:
         graph.add_node("WebAgent", self.nodes.web_agent_node)
         graph.add_node("CallTools", tool_node)
         graph.add_node("StoreEvents", self.nodes.storage_node)
-        graph.add_node("WebSearchAgent", self.nodes.web_search_agent_node)
         graph.add_node("SortByDistance", self.nodes.sort_by_distance_node)
         graph.add_node("GenerateResponse", self.nodes.generate_conversational_response_node)
 
@@ -83,25 +82,11 @@ class EventsService:
             self.routing.route_completeness_check,
             {
                 "ask_location": "AskForLocation",
-                "csv": "CSVRetrieval",
                 "web": "WebAgent"
             }
         )
 
-        graph.add_conditional_edges(
-            "AskForLocation",
-            self.routing.route_after_location,
-            {
-                "csv": "CSVRetrieval",
-                "web": "WebAgent"
-            }
-        )
-
-        graph.add_conditional_edges(
-            "CSVRetrieval",
-            self.routing.route_csv_results,
-            {"sort": "SortByDistance", "web": "WebAgent"}
-        )
+        graph.add_edge("AskForLocation", "WebAgent")
 
         graph.add_conditional_edges(
             "WebAgent",
@@ -109,15 +94,11 @@ class EventsService:
             {"tools": "CallTools", "response": "GenerateResponse"}
         )
 
-        graph.add_conditional_edges(
-            "CallTools",
-            self.routing.route_tool_results,
-            {"store": "StoreEvents", "websearch": "WebSearchAgent"}
-        )
+        graph.add_edge("CallTools", "StoreEvents")
 
-        # Final edges
-        graph.add_edge("StoreEvents", "SortByDistance")
-        graph.add_edge("WebSearchAgent", "SortByDistance")
+        # Final edges: After storing, retrieve all events from CSV
+        graph.add_edge("StoreEvents", "CSVRetrieval")
+        graph.add_edge("CSVRetrieval", "SortByDistance")
         graph.add_edge("SortByDistance", "GenerateResponse")
         graph.add_edge("GenerateResponse", END)
 
