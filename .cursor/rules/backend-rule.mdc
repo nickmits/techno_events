@@ -1,0 +1,327 @@
+---
+alwaysApply: true
+---
+
+# Backend Development Rules - Techno Events API
+
+## Architecture Overview
+
+This backend is built with **FastAPI** and uses **LangGraph** for multi-agent event discovery from multiple sources (Resident Advisor, GO-OUT).
+
+### Tech Stack
+- **FastAPI**: Modern, fast web framework for building APIs
+- **LangGraph**: Multi-agent orchestration framework
+- **LangChain**: Agent and tool framework
+- **OpenAI**: LLM for agent decision-making (gpt-4o-mini)
+- **Pydantic**: Data validation and settings management
+- **Python 3.13+**
+
+## Project Structure
+
+```
+backend/
+├── main.py                 # FastAPI application and endpoints
+├── services/
+│   └── events_service.py   # LangGraph integration service
+├── tools/
+│   ├── ra_events.py        # Resident Advisor API tool
+│   └── goout_events.py     # GO-OUT API tool
+└── __init__.py
+```
+
+## Code Style & Conventions
+
+### General Guidelines
+- Use **async/await** for all I/O operations
+- Follow PEP 8 style guide
+- Use type hints for all function parameters and return values
+- Keep functions focused and single-purpose
+- Maximum line length: 120 characters
+
+### Naming Conventions
+- **Files**: snake_case (e.g., `events_service.py`)
+- **Classes**: PascalCase (e.g., `EventsService`)
+- **Functions/Variables**: snake_case (e.g., `fetch_events`)
+- **Constants**: UPPER_SNAKE_CASE (e.g., `AREA_IDS`)
+
+### Documentation
+- All modules must have docstrings
+- All public functions/classes must have docstrings
+- Use Google-style docstrings:
+```python
+def function_name(param1: str, param2: int) -> bool:
+    """
+    Brief description of function.
+
+    Args:
+        param1: Description of param1
+        param2: Description of param2
+
+    Returns:
+        Description of return value
+
+    Raises:
+        ExceptionType: When this exception is raised
+    """
+```
+
+## FastAPI Endpoint Design
+
+### RESTful Principles
+- Use appropriate HTTP methods (GET, POST, PUT, DELETE)
+- Use meaningful URL paths
+- Return appropriate status codes
+- Include proper error handling
+
+### Request/Response Models
+- Always use Pydantic models for request/response validation
+- Include Field descriptions and examples
+- Use Optional for nullable fields
+- Validate input constraints (min/max, regex patterns)
+
+### Example:
+```python
+class EventsRequest(BaseModel):
+    query: str = Field(..., description="Natural language query", example="Events in Athens")
+    location: Optional[str] = Field(None, description="Location filter")
+```
+
+### Error Handling
+- Use HTTPException for API errors
+- Always include meaningful error messages
+- Log errors for debugging
+- Return consistent error response format
+
+## LangGraph Integration
+
+### Agent Design
+- Each agent should have a **single responsibility**
+- Use descriptive system prompts
+- Agents should work autonomously without user clarification
+- Tools should be properly decorated with `@tool`
+- **Include current date/time context** in system prompts to help LLM interpret relative dates like "this weekend", "next Friday", "tonight", etc.
+
+### State Management
+- Use TypedDict for agent state
+- Use Annotated with operators for list aggregation
+- Keep state minimal and focused
+
+### Graph Structure
+- Define clear node connections
+- Use sequential or conditional routing as needed
+- Always compile graph before use
+
+## Service Layer
+
+### EventsService Responsibilities
+- Lazy-load LangGraph (build on first request)
+- Handle query enhancement with filters
+- Manage agent orchestration
+- Proper error handling and logging
+
+## Tools Development
+
+### Tool Design Principles
+- Tools should be **pure functions** when possible
+- Include comprehensive docstrings (used by LLM)
+- Handle errors gracefully and return error messages
+- Format output as human-readable strings
+- Include all relevant information (URLs, dates, venues)
+
+### External API Integration
+- Always set timeouts on requests
+- Include proper headers (User-Agent, Content-Type)
+- Handle rate limiting and retries
+- Parse and validate API responses
+- Map API errors to user-friendly messages
+
+## Environment Variables
+
+Required environment variables:
+```bash
+OPENAI_API_KEY=your_openai_api_key
+```
+
+Store in `.env` file, never commit to version control.
+
+## Logging
+
+- Use Python's `logging` module
+- Log at appropriate levels:
+  - `DEBUG`: Detailed information for debugging
+  - `INFO`: General informational messages
+  - `WARNING`: Warning messages
+  - `ERROR`: Error messages
+  - `CRITICAL`: Critical issues
+
+Example:
+```python
+import logging
+logger = logging.getLogger(__name__)
+logger.info("Processing events query: {query}")
+```
+
+## CORS Configuration
+
+- Configure CORS middleware in main.py
+- In development: Allow all origins (`["*"]`)
+- In production: Specify allowed origins explicitly
+
+## Testing
+
+### Manual Testing
+- Use FastAPI's built-in docs at `/docs`
+- Test with curl or Postman
+- Verify both success and error cases
+
+### Endpoint Testing Checklist
+- Valid request with all parameters
+- Valid request with minimal parameters
+- Invalid request (missing required fields)
+- Invalid data types
+- Edge cases (empty strings, very large inputs)
+
+## Deployment Considerations
+
+### Production Checklist
+- Set proper CORS origins
+- Use environment variables for secrets
+- Enable proper logging configuration
+- Set reasonable timeouts
+- Handle rate limiting
+- Monitor API usage and costs (OpenAI)
+
+### Running the Server
+Development:
+```bash
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Production:
+```bash
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+## API Endpoints
+
+### Primary Endpoint: `/api/events`
+**Method**: POST
+
+**Purpose**: Fetch events using natural language queries
+
+**Request Body**:
+```json
+{
+  "query": "What events are happening this weekend?",
+  "location": "athens",
+  "start_date": "2025-11-01",
+  "end_date": "2025-11-05",
+  "days_ahead": 30
+}
+```
+
+**Date Query Options**:
+
+The system supports three ways to specify dates:
+
+1. **Natural Language Only** (LLM interprets based on current date):
+```json
+{
+  "query": "What events are happening this weekend in Athens?"
+}
+```
+```json
+{
+  "query": "Techno events next Friday in Berlin"
+}
+```
+
+2. **Structured Dates** (Most reliable):
+```json
+{
+  "query": "Electronic music events",
+  "location": "athens",
+  "start_date": "2025-11-04",
+  "end_date": "2025-11-12"
+}
+```
+
+3. **Combination** (Natural + Structured):
+```json
+{
+  "query": "What techno events are happening between 4 Nov and 12 Nov?",
+  "location": "berlin"
+}
+```
+
+**Current Date Context**: The system automatically provides current date/time to the LLM in each request, allowing it to accurately interpret relative dates like "tonight", "this weekend", "next week", etc.
+
+**Response**:
+```json
+{
+  "query": "What events are happening this weekend?",
+  "sources": [
+    {
+      "name": "RAEvents",
+      "content": "Formatted event listings..."
+    },
+    {
+      "name": "GOOUTEvents",
+      "content": "Formatted event listings..."
+    }
+  ],
+  "total_sources": 2,
+  "timestamp": "2025-11-01T12:00:00"
+}
+```
+
+### Health Check: `/api/health`
+**Method**: GET
+
+**Purpose**: Check API health status
+
+## Security Best Practices
+
+- Never expose API keys in code or logs
+- Validate all user inputs
+- Use HTTPS in production
+- Implement rate limiting
+- Sanitize error messages (don't leak internal details)
+- Keep dependencies updated
+
+## Performance Optimization
+
+- Use async operations for all I/O
+- Implement caching where appropriate
+- Set reasonable timeouts
+- Lazy-load resources (e.g., LangGraph)
+- Monitor response times
+
+## Common Issues & Solutions
+
+### Issue: "OPENAI_API_KEY not found"
+**Solution**: Ensure `.env` file exists with valid API key
+
+### Issue: Slow responses
+**Solution**: Check external API timeouts, optimize agent prompts
+
+### Issue: Agent not calling tools
+**Solution**: Verify tool docstrings are clear, check system prompts
+
+## Extension Points
+
+### Adding New Event Sources
+1. Create new tool in `backend/tools/`
+2. Decorate with `@tool` and include comprehensive docstring
+3. Add agent in `events_service.py`
+4. Update graph structure to include new agent
+
+### Adding New Endpoints
+1. Define Pydantic request/response models
+2. Create endpoint in `main.py`
+3. Add business logic in appropriate service
+4. Document in this rules file
+
+---
+
+Remember: Clean, maintainable code is more important than clever code. Prioritize readability and proper error handling.

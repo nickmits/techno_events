@@ -1,0 +1,444 @@
+---
+alwaysApply: true
+---
+
+# Frontend Development Rules - Techno Events
+
+## Overview
+
+Frontend for the Techno Events application that integrates with the FastAPI backend to display events from multiple sources (Resident Advisor, GO-OUT).
+
+## Backend API Integration
+
+### Base URL Configuration
+
+Development:
+```javascript
+const API_BASE_URL = 'http://localhost:8000';
+```
+
+Production:
+```javascript
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://your-production-url.com';
+```
+
+### Primary Endpoint: POST `/api/events`
+
+**Request Structure**:
+```typescript
+interface EventsRequest {
+  query: string;                  // Required: Natural language query
+  location?: string;              // Optional: Location filter (e.g., "athens")
+  start_date?: string;            // Optional: YYYY-MM-DD format
+  end_date?: string;              // Optional: YYYY-MM-DD format
+  days_ahead?: number;            // Optional: Default 30, range 1-90
+}
+```
+
+**Response Structure**:
+```typescript
+interface EventSource {
+  name: string;                   // Agent name (e.g., "RAEvents", "GOOUTEvents")
+  content: string;                // Formatted event listings
+}
+
+interface EventsResponse {
+  query: string;                  // Original query
+  sources: EventSource[];         // Array of event sources
+  total_sources: number;          // Number of sources
+  timestamp: string;              // ISO timestamp
+}
+```
+
+### Example API Call (Fetch)
+
+```javascript
+async function fetchEvents(query, filters = {}) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/events`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        ...filters
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching events:', error);
+    throw error;
+  }
+}
+```
+
+### Example API Call (Axios)
+
+```javascript
+import axios from 'axios';
+
+async function fetchEvents(query, filters = {}) {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/api/events`, {
+      query,
+      ...filters
+    });
+    return response.data;
+  } catch (error) {
+    if (error.response) {
+      // Server responded with error status
+      console.error('Server error:', error.response.data);
+    } else if (error.request) {
+      // Request made but no response
+      console.error('Network error:', error.request);
+    } else {
+      console.error('Error:', error.message);
+    }
+    throw error;
+  }
+}
+```
+
+### Usage Examples
+
+**Basic Query**:
+```javascript
+const result = await fetchEvents("What events are happening this weekend?");
+```
+
+**With Location Filter**:
+```javascript
+const result = await fetchEvents("Techno events", {
+  location: "athens"
+});
+```
+
+**With Date Range**:
+```javascript
+const result = await fetchEvents("Electronic music events", {
+  location: "berlin",
+  start_date: "2025-11-01",
+  end_date: "2025-11-05"
+});
+```
+
+## UI/UX Guidelines
+
+### Event Display
+
+**Multi-Source Display**:
+- Display events from each source (RA, GO-OUT) separately
+- Show source name prominently (e.g., "Resident Advisor", "GO-OUT")
+- Allow users to filter/toggle sources
+
+**Event Card Components**:
+Each event listing includes:
+- Event title
+- Venue/location (with 📍 icon)
+- Date and time (with 📅 icon)
+- Additional info (attendance, music types, etc.)
+- Link to original event page
+
+**Parsing Event Content**:
+The `content` field from each source contains formatted text with emojis. You can:
+1. Display as-is (preserves formatting)
+2. Parse into structured data using regex
+3. Convert to HTML with proper styling
+
+### Loading States
+
+```javascript
+const [isLoading, setIsLoading] = useState(false);
+const [events, setEvents] = useState(null);
+const [error, setError] = useState(null);
+
+async function handleSearch(query) {
+  setIsLoading(true);
+  setError(null);
+
+  try {
+    const data = await fetchEvents(query);
+    setEvents(data);
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    setIsLoading(false);
+  }
+}
+```
+
+### Error Handling
+
+**Display User-Friendly Errors**:
+```javascript
+{error && (
+  <div className="error-message">
+    <p>Unable to fetch events. Please try again.</p>
+    <small>{error}</small>
+  </div>
+)}
+```
+
+**Common Error Scenarios**:
+- Network errors (backend offline)
+- Invalid query format
+- API timeout
+- No events found
+
+## State Management
+
+### Component State (Simple Apps)
+
+For simple applications, use React hooks:
+```javascript
+const [query, setQuery] = useState('');
+const [events, setEvents] = useState(null);
+const [filters, setFilters] = useState({
+  location: '',
+  start_date: '',
+  end_date: ''
+});
+```
+
+### Context API (Medium Apps)
+
+```javascript
+const EventsContext = createContext();
+
+export function EventsProvider({ children }) {
+  const [events, setEvents] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchEvents = async (query, filters) => {
+    // ... implementation
+  };
+
+  return (
+    <EventsContext.Provider value={{ events, loading, fetchEvents }}>
+      {children}
+    </EventsContext.Provider>
+  );
+}
+```
+
+## Form Design
+
+### Search Form
+
+```javascript
+function EventSearchForm({ onSearch }) {
+  const [query, setQuery] = useState('');
+  const [location, setLocation] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSearch(query, { location });
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="What events are you looking for?"
+        required
+      />
+
+      <select value={location} onChange={(e) => setLocation(e.target.value)}>
+        <option value="">All Locations</option>
+        <option value="athens">Athens</option>
+        <option value="berlin">Berlin</option>
+        <option value="london">London</option>
+      </select>
+
+      <button type="submit">Search Events</button>
+    </form>
+  );
+}
+```
+
+### Date Picker Integration
+
+```javascript
+import DatePicker from 'react-datepicker';
+
+const [startDate, setStartDate] = useState(null);
+const [endDate, setEndDate] = useState(null);
+
+<DatePicker
+  selected={startDate}
+  onChange={setStartDate}
+  dateFormat="yyyy-MM-dd"
+  placeholderText="Start Date"
+/>
+```
+
+## Responsive Design
+
+- Mobile-first approach
+- Breakpoints:
+  - Mobile: < 768px
+  - Tablet: 768px - 1024px
+  - Desktop: > 1024px
+
+## Performance Optimization
+
+### Debouncing Search Input
+
+```javascript
+import { useState, useEffect } from 'react';
+
+function useDebounce(value, delay) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => clearTimeout(handler);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
+// Usage
+const debouncedQuery = useDebounce(query, 500);
+
+useEffect(() => {
+  if (debouncedQuery) {
+    fetchEvents(debouncedQuery);
+  }
+}, [debouncedQuery]);
+```
+
+### Caching Results
+
+```javascript
+const [cache, setCache] = useState({});
+
+async function fetchEventsWithCache(query, filters) {
+  const cacheKey = JSON.stringify({ query, filters });
+
+  if (cache[cacheKey]) {
+    return cache[cacheKey];
+  }
+
+  const data = await fetchEvents(query, filters);
+  setCache({ ...cache, [cacheKey]: data });
+  return data;
+}
+```
+
+## Accessibility
+
+- Use semantic HTML elements
+- Include proper ARIA labels
+- Ensure keyboard navigation works
+- Provide alt text for images
+- Maintain good color contrast
+
+```javascript
+<button
+  onClick={handleSearch}
+  aria-label="Search for events"
+  disabled={isLoading}
+>
+  {isLoading ? 'Searching...' : 'Search'}
+</button>
+```
+
+## Testing
+
+### Test API Integration
+
+```javascript
+// Mock API calls in tests
+global.fetch = jest.fn(() =>
+  Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({
+      query: "test query",
+      sources: [],
+      total_sources: 0,
+      timestamp: new Date().toISOString()
+    })
+  })
+);
+
+test('fetchEvents returns data', async () => {
+  const data = await fetchEvents("test query");
+  expect(data).toHaveProperty('sources');
+});
+```
+
+## Security
+
+- Sanitize user inputs before sending to API
+- Never expose API keys in frontend code
+- Use HTTPS in production
+- Implement Content Security Policy (CSP)
+
+## Environment Variables
+
+Create `.env` file:
+```bash
+REACT_APP_API_URL=http://localhost:8000
+```
+
+Access in code:
+```javascript
+const API_URL = process.env.REACT_APP_API_URL;
+```
+
+## Common Patterns
+
+### Conditional Rendering
+
+```javascript
+{isLoading && <LoadingSpinner />}
+{error && <ErrorMessage error={error} />}
+{events && <EventsList sources={events.sources} />}
+```
+
+### Mapping Event Sources
+
+```javascript
+{events?.sources.map((source, index) => (
+  <div key={index} className="event-source">
+    <h2>{source.name}</h2>
+    <pre>{source.content}</pre>
+  </div>
+))}
+```
+
+## Best Practices
+
+1. **Component Organization**:
+   - Keep components small and focused
+   - Separate presentation from logic
+   - Use custom hooks for reusable logic
+
+2. **Props Validation**:
+   - Use PropTypes or TypeScript
+   - Document expected props
+
+3. **Code Splitting**:
+   - Lazy load routes
+   - Use dynamic imports for large components
+
+4. **Error Boundaries**:
+   - Wrap app in error boundary
+   - Provide fallback UI
+
+---
+
+Remember: Always test API integration thoroughly and handle all edge cases gracefully.

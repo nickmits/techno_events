@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -m uvicorn:*)",
+      "Bash(curl:*)",
+      "Bash(python -m json.tool:*)",
+      "Bash(python:*)",
+      "Bash(npm create:*)",
+      "Bash(npm install)",
+      "Bash(npm install:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npx tsc:*)",
+      "Bash(cat:*)",
+      "Bash(taskkill:*)",
+      "Bash(wmic process where \"name=''''python.exe''''\" get ProcessId,CommandLine)",
+      "Bash(findstr:*)",
+      "Bash(dir:*)",
+      "Bash(timeout /t 5)",
+      "Bash(del \"C:\\Users\\nickm\\Documents\\techno_events\\backend\\data\\events_with_metadata.csv\")",
+      "Bash(netstat:*)",
+      "Bash(wmic process where name=''python.exe'' get ProcessId,CommandLine)",
+      "Bash(del backenddataevents_with_metadata.csv)",
+      "Bash(wmic process:*)",
+      "Bash(pkill:*)",
+      "Bash(jobs:*)",
+      "Bash(tasklist:*)",
+      "Bash(powershell \"Get-Process -Id 31172 | Select-Object Id, ProcessName, Path\")",
+      "Bash(powershell \"Stop-Process -Id 31172 -Force\")",
+      "Bash(cmd //c \"taskkill /PID 31172 /F\")",
+      "Bash(cmd //c \"taskkill /PID 15008 /F\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
