@@ -209,6 +209,24 @@ class GeocodingService:
             logger.error(f"❌ Error extracting coordinates from Tavily results: {e}")
             return None
 
+    def _clean_venue_address(self, venue_address: str) -> str:
+        """Clean and standardize venue address for better geocoding"""
+        cleaned = venue_address.strip()
+
+        # Remove multiple consecutive spaces
+        cleaned = ' '.join(cleaned.split())
+
+        # Remove trailing ", Athens" variations  that are duplicated
+        patterns_to_remove = [
+            r',\s*Athens,\s*Athens\s*\d*,?\s*Greece',
+            r',\s*Athina\s*\d+\s*\d+,?\s*Greece',
+            r',\s*Athina\s*\d+\s*\d+,?\s*Athens',
+        ]
+        for pattern in patterns_to_remove:
+            cleaned = re.sub(pattern, ', Athens, Greece', cleaned, flags=re.IGNORECASE)
+
+        return cleaned
+
     def geocode_venue(self, venue_address: str, use_tavily_fallback: bool = True) -> Optional[Tuple[float, float]]:
         """
         Convert venue address to coordinates (latitude, longitude)
@@ -221,6 +239,9 @@ class GeocodingService:
         Returns:
             Tuple of (latitude, longitude) or None if geocoding fails
         """
+        # Clean the address first
+        venue_address = self._clean_venue_address(venue_address)
+
         # Check cache first
         cache_key = venue_address.lower().strip()
         if cache_key in self.geocode_cache:
@@ -230,21 +251,34 @@ class GeocodingService:
         # Try multiple search strategies with Nominatim
         search_strategies = []
 
-        # Strategy 1: If address contains comma, try the address part only (after first comma)
+        # Strategy 1: Extract just the street address (after venue name, before city)
+        # Example: "SMUT Athens, Vatsaxi 4, Athina 104 38, Greece, Athens" → "Vatsaxi 4, Athens, Greece"
+        if ',' in venue_address:
+            parts = venue_address.split(',')
+            # Try to find the address part (contains numbers)
+            for i, part in enumerate(parts):
+                if any(char.isdigit() for char in part):
+                    # Found address with street number
+                    address_part = part.strip()
+                    search_strategies.append(f"{address_part}, Athens, Greece")
+                    break
+
+        # Strategy 2: If address contains comma, try the address part only (after first comma)
         if ',' in venue_address:
             address_only = ','.join(venue_address.split(',')[1:]).strip()
-            if address_only:
+            if address_only and address_only not in [s for s in search_strategies]:
                 search_strategies.append(f"{address_only}, Athens, Greece")
 
-        # Strategy 2: Original address with Athens, Greece appended
+        # Strategy 3: Original address with Athens, Greece appended
         if "athens" not in venue_address.lower():
             search_strategies.append(f"{venue_address}, Athens, Greece")
         else:
             search_strategies.append(venue_address)
 
-        # Strategy 3: Just the venue address as-is (if different from strategy 2)
-        if venue_address not in search_strategies:
-            search_strategies.append(venue_address)
+        # Strategy 4: Just the venue name alone
+        if ',' in venue_address:
+            venue_name = venue_address.split(',')[0].strip()
+            search_strategies.append(f"{venue_name}, Athens, Greece")
 
         # Try each strategy
         for idx, search_query in enumerate(search_strategies, 1):

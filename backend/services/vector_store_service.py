@@ -1,6 +1,7 @@
 """
 Vector Store Service - CSV-first event storage with semantic retrieval
 Similar to book system: uses CSV as primary source with advanced retrieval
+Includes embedding caching to reduce API calls
 """
 
 from langchain_openai import OpenAIEmbeddings
@@ -10,6 +11,7 @@ from langchain.retrievers.multi_query import MultiQueryRetriever
 from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain.chat_models import init_chat_model
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -18,8 +20,69 @@ import os
 import csv
 from pathlib import Path
 import pandas as pd
+import hashlib
+import json
 
 logger = logging.getLogger(__name__)
+
+
+class CachedEmbeddings(Embeddings):
+    """Wrapper around OpenAIEmbeddings with caching support - inherits from Embeddings base class"""
+
+    def __init__(self, embedding_model: OpenAIEmbeddings, vector_store_service):
+        self.embedding_model = embedding_model
+        self.vector_store = vector_store_service
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed documents with caching"""
+        embeddings = []
+        texts_to_embed = []
+        text_indices = []
+
+        # Check cache for each text
+        for i, text in enumerate(texts):
+            cached = self.vector_store._get_cached_embedding(text)
+            if cached is not None:
+                embeddings.append(cached)
+                self.cache_hits += 1
+            else:
+                texts_to_embed.append(text)
+                text_indices.append(i)
+                embeddings.append(None)  # Placeholder
+                self.cache_misses += 1
+
+        # Embed texts that weren't cached
+        if texts_to_embed:
+            logger.info(f"📊 Embedding cache: {self.cache_hits} hits, {self.cache_misses} misses ({self.cache_hits / (self.cache_hits + self.cache_misses) * 100:.1f}% hit rate)")
+            new_embeddings = self.embedding_model.embed_documents(texts_to_embed)
+
+            # Cache new embeddings and fill in placeholders
+            for idx, text, embedding in zip(text_indices, texts_to_embed, new_embeddings):
+                self.vector_store._cache_embedding(text, embedding)
+                embeddings[idx] = embedding
+
+        return embeddings
+
+    def embed_query(self, text: str) -> List[float]:
+        """Embed query with caching"""
+        cached = self.vector_store._get_cached_embedding(text)
+        if cached is not None:
+            self.cache_hits += 1
+            logger.info(f"✅ Using cached embedding for query")
+            return cached
+
+        self.cache_misses += 1
+        logger.info(f"⚠️ Cache miss, generating new embedding")
+        embedding = self.embedding_model.embed_query(text)
+        self.vector_store._cache_embedding(text, embedding)
+
+        # Save cache periodically (every 10 misses)
+        if self.cache_misses % 10 == 0:
+            self.vector_store._save_embedding_cache()
+
+        return embedding
 
 
 class VectorStoreService:
@@ -31,6 +94,11 @@ class VectorStoreService:
         self.embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
         self.retriever = None
         self.events_df = None
+
+        # Embedding cache - stores {text_hash: embedding_vector}
+        self.embedding_cache = {}
+        self.cache_file = "./backend/data/embedding_cache.json"
+        self._load_embedding_cache()
 
         # Create data directory if it doesn't exist
         Path("./data").mkdir(exist_ok=True)
@@ -44,6 +112,44 @@ class VectorStoreService:
 
         # Load CSV data and build retriever
         self._load_and_build_retriever()
+
+    def _load_embedding_cache(self):
+        """Load embedding cache from disk"""
+        try:
+            if Path(self.cache_file).exists():
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    self.embedding_cache = json.load(f)
+                logger.info(f"Loaded {len(self.embedding_cache)} cached embeddings")
+            else:
+                self.embedding_cache = {}
+                logger.info("No embedding cache found, starting fresh")
+        except Exception as e:
+            logger.error(f"Error loading embedding cache: {e}")
+            self.embedding_cache = {}
+
+    def _save_embedding_cache(self):
+        """Save embedding cache to disk"""
+        try:
+            Path("./backend/data").mkdir(parents=True, exist_ok=True)
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.embedding_cache, f)
+            logger.info(f"Saved {len(self.embedding_cache)} embeddings to cache")
+        except Exception as e:
+            logger.error(f"Error saving embedding cache: {e}")
+
+    def _get_text_hash(self, text: str) -> str:
+        """Generate a hash for text to use as cache key"""
+        return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+    def _get_cached_embedding(self, text: str) -> Optional[List[float]]:
+        """Get embedding from cache if exists"""
+        text_hash = self._get_text_hash(text)
+        return self.embedding_cache.get(text_hash)
+
+    def _cache_embedding(self, text: str, embedding: List[float]):
+        """Cache an embedding"""
+        text_hash = self._get_text_hash(text)
+        self.embedding_cache[text_hash] = embedding
 
     def _initialize_csv(self):
         """Create CSV file with proper headers"""
@@ -142,13 +248,17 @@ Location: {row['location']}
             bm25_retriever = BM25Retriever.from_documents(documents)
             bm25_retriever.k = 10
 
-            # 2. Semantic Vector Store
+            # 2. Semantic Vector Store with cached embeddings
+            cached_embeddings = CachedEmbeddings(self.embedding_model, self)
             vectorstore = Qdrant.from_documents(
                 documents=documents,
-                embedding=self.embedding_model,
+                embedding=cached_embeddings,
                 location=":memory:",
                 collection_name="events_semantic"
             )
+
+            # Save cache after building vector store
+            self._save_embedding_cache()
 
             # 3. Multi-Query Retriever (generates multiple search queries)
             multi_query_retriever = MultiQueryRetriever.from_llm(
@@ -226,6 +336,31 @@ Location: {row['location']}
             logger.error(f"Error checking if events exist in CSV: {e}")
             return False
 
+    def _create_event_key(self, title: str, event_date: str, url: str) -> str:
+        """Create a unique key for an event based on title, date, and URL"""
+        # Normalize title (lowercase, strip whitespace)
+        normalized_title = title.lower().strip()
+        # Use URL as primary key if available, otherwise use title+date
+        if url:
+            return url.strip().lower()
+        return f"{normalized_title}|{event_date}"
+
+    def _get_existing_event_keys(self) -> set:
+        """Get set of existing event keys from CSV"""
+        existing_keys = set()
+        try:
+            if self.events_df is not None and len(self.events_df) > 0:
+                for _, row in self.events_df.iterrows():
+                    key = self._create_event_key(
+                        row.get('title', ''),
+                        row.get('event_date', ''),
+                        row.get('url', '')
+                    )
+                    existing_keys.add(key)
+        except Exception as e:
+            logger.error(f"Error getting existing event keys: {e}")
+        return existing_keys
+
     def store_events(
         self,
         events_data: List[Dict[str, Any]],
@@ -234,7 +369,7 @@ Location: {row['location']}
         location: Optional[str] = None
     ):
         """
-        Store events in CSV and rebuild retriever
+        Store events in CSV and rebuild retriever (with duplicate detection)
 
         Args:
             events_data: List of event dictionaries from sources
@@ -243,8 +378,14 @@ Location: {row['location']}
             location: Location filter used
         """
         try:
+            # Get existing event keys to prevent duplicates
+            existing_keys = self._get_existing_event_keys()
+            logger.info(f"Found {len(existing_keys)} existing events in CSV")
+
             # Parse all events from content
             all_events = []
+            duplicates_skipped = 0
+
             for event_data in events_data:
                 source_name = event_data.get("name", "Unknown")
                 content = event_data.get("content", "")
@@ -253,6 +394,19 @@ Location: {row['location']}
                 events = self._parse_events_from_content(content, source_name)
 
                 for event in events:
+                    # Create event key for duplicate checking
+                    event_key = self._create_event_key(
+                        event.get("title", ""),
+                        event.get("date", ""),
+                        event.get("url", "")
+                    )
+
+                    # Skip if event already exists
+                    if event_key in existing_keys:
+                        duplicates_skipped += 1
+                        logger.debug(f"⏭️ Skipping duplicate event: {event.get('title')} on {event.get('date')}")
+                        continue
+
                     # Clean description to prevent CSV corruption
                     description = event.get("text", "")
                     if description:
@@ -276,9 +430,14 @@ Location: {row['location']}
                         "stored_at": datetime.now().isoformat()
                     }
                     all_events.append(event_record)
+                    # Add to existing keys to prevent duplicates within this batch
+                    existing_keys.add(event_key)
+
+            if duplicates_skipped > 0:
+                logger.info(f"⏭️ Skipped {duplicates_skipped} duplicate events")
 
             if not all_events:
-                logger.warning("No events to store")
+                logger.warning("No new events to store (all were duplicates or empty)")
                 return
 
             # Append to CSV
@@ -288,7 +447,7 @@ Location: {row['location']}
             logger.info("Rebuilding retriever with new events...")
             self._load_and_build_retriever()
 
-            logger.info(f"Successfully stored {len(all_events)} events and rebuilt retriever")
+            logger.info(f"Successfully stored {len(all_events)} new events and rebuilt retriever")
 
         except Exception as e:
             logger.error(f"Error storing events: {e}")

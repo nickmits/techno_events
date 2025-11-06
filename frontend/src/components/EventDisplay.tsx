@@ -84,43 +84,7 @@ const EventDisplay: React.FC<EventDisplayProps> = ({
   }
 
   return (
-    <Box sx={{ mt: 4 }}>
-      {/* Query Header */}
-      <Typography
-        variant="h5"
-        gutterBottom
-        sx={{
-          color: 'primary.main',
-          mb: 3,
-          textTransform: 'uppercase',
-          letterSpacing: 2,
-        }}
-      >
-        Results for: {response.query}
-      </Typography>
-
-      {/* Intro Message */}
-      {response.intro && (
-        <Paper
-          sx={{
-            p: 3,
-            mb: 4,
-            backgroundColor: 'rgba(21, 21, 32, 0.6)',
-            border: '1px solid rgba(0, 255, 255, 0.2)',
-          }}
-        >
-          <Typography
-            variant="body1"
-            sx={{
-              color: 'text.primary',
-              fontSize: '1.1rem',
-              lineHeight: 1.8,
-            }}
-          >
-            {response.intro}
-          </Typography>
-        </Paper>
-      )}
+    <Box sx={{ mt: 2 }}>
 
       {/* Events Grid */}
       {response.events && response.events.length > 0 && (
