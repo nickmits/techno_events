@@ -43,6 +43,8 @@ describe('EventDisplay', () => {
   it('should display event sources when response is provided', () => {
     const mockResponse = {
       query: 'Test query',
+      source: 'test',
+      events: [],
       sources: [
         {
           name: 'Test Source',

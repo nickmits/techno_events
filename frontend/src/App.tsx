@@ -15,7 +15,6 @@ import {
   Send as SendIcon,
   VolumeUp as VolumeUpIcon,
   VolumeOff as VolumeOffIcon,
-  PlayArrow as PlayArrowIcon,
 } from '@mui/icons-material';
 import technoTheme from './theme';
 import EventDisplay from './components/EventDisplay';

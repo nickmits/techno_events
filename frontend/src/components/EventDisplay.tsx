@@ -5,7 +5,6 @@ import {
   CircularProgress,
   Alert,
   Grid,
-  Paper,
 } from '@mui/material';
 import EventCard from './EventCard';
 import type { EventsResponse } from '../types';

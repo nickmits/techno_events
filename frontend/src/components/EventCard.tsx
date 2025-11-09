@@ -11,7 +11,6 @@ import {
 import {
   Place as PlaceIcon,
   CalendarToday as CalendarIcon,
-  People as PeopleIcon,
   MusicNote as MusicIcon,
   OpenInNew as LinkIcon,
   NearMe as DistanceIcon,

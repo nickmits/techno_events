@@ -43,6 +43,7 @@ export interface EventsResponse {
   query: string;
   source: string;
   intro?: string;
+  final_response?: string;
   events: Event[];
   sources: EventSource[];
   total_sources: number;
