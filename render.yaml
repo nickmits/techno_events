@@ -9,7 +9,7 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.11.9"
       - key: OPENAI_API_KEY
         sync: false  # Set manually in Render dashboard for security
       - key: COHERE_API_KEY
