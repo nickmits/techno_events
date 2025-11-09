@@ -10,8 +10,8 @@ from typing import Optional, List
 from datetime import datetime
 import logging
 
-from services.events_service import EventsService
-from services.geocoding_service import GeocodingService
+from backend.services.events_service import EventsService
+from backend.services.geocoding_service import GeocodingService
 import math
 
 # Configure logging

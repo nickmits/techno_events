@@ -5,8 +5,8 @@ from typing import Dict, Any
 from langchain_core.messages import ToolMessage
 import logging
 
-from services.graph_schemas import AgentState
-from services.tool_parsers import parse_tool_messages
+from backend.services.graph_schemas import AgentState
+from backend.services.tool_parsers import parse_tool_messages
 
 logger = logging.getLogger(__name__)
 

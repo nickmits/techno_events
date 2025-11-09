@@ -31,7 +31,10 @@
       "Bash(cmd //c \"taskkill /PID 15008 /F\")",
       "Bash(where PERSONA_SLIDE.md)",
       "Bash(pip show:*)",
-      "Bash(requirements.txt)"
+      "Bash(requirements.txt)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []

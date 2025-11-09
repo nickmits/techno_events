@@ -9,9 +9,9 @@ import logging
 import json
 import re
 
-from services.graph_schemas import AgentState
-from services.tool_parsers import parse_tool_messages, parse_tavily_results
-from tools.tavily_search import get_tavily_search_tool
+from backend.services.graph_schemas import AgentState
+from backend.services.tool_parsers import parse_tool_messages, parse_tavily_results
+from backend.tools.tavily_search import get_tavily_search_tool
 
 logger = logging.getLogger(__name__)
 
