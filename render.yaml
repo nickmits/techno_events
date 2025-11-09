@@ -5,7 +5,7 @@ services:
     plan: free
     region: frankfurt  # Closest to Athens
     buildCommand: "pip install -r backend/requirements.txt"
-    startCommand: "export PYTHONPATH=/opt/render/project/src:$PYTHONPATH && cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
