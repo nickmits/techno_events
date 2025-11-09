@@ -28,7 +28,9 @@
       "Bash(powershell \"Get-Process -Id 31172 | Select-Object Id, ProcessName, Path\")",
       "Bash(powershell \"Stop-Process -Id 31172 -Force\")",
       "Bash(cmd //c \"taskkill /PID 31172 /F\")",
-      "Bash(cmd //c \"taskkill /PID 15008 /F\")"
+      "Bash(cmd //c \"taskkill /PID 15008 /F\")",
+      "Bash(where PERSONA_SLIDE.md)",
+      "Bash(pip show:*)"
     ],
     "deny": [],
     "ask": []
