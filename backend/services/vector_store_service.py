@@ -6,7 +6,8 @@ Includes embedding caching to reduce API calls
 
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Qdrant
-from langchain.retrievers import EnsembleRetriever, MultiQueryRetriever, ContextualCompressionRetriever
+from langchain.retrievers import EnsembleRetriever, MultiQueryRetriever
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
