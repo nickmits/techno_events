@@ -16,3 +16,7 @@ services:
         sync: false  # Optional
       - key: TAVILY_API_KEY
         sync: false
+      - key: QDRANT_URL
+        sync: false  # Optional - Qdrant Cloud URL
+      - key: QDRANT_API_KEY
+        sync: false  # Optional - Qdrant Cloud API key

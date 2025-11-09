@@ -30,7 +30,8 @@
       "Bash(cmd //c \"taskkill /PID 31172 /F\")",
       "Bash(cmd //c \"taskkill /PID 15008 /F\")",
       "Bash(where PERSONA_SLIDE.md)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(requirements.txt)"
     ],
     "deny": [],
     "ask": []

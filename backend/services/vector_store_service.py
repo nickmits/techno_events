@@ -248,12 +248,29 @@ Location: {row['location']}
 
             # 2. Semantic Vector Store with cached embeddings
             cached_embeddings = CachedEmbeddings(self.embedding_model, self)
-            vectorstore = Qdrant.from_documents(
-                documents=documents,
-                embedding=cached_embeddings,
-                location=":memory:",
-                collection_name="events_semantic"
-            )
+
+            # Use Qdrant Cloud if credentials are available, otherwise use in-memory
+            qdrant_url = os.getenv("QDRANT_URL")
+            qdrant_api_key = os.getenv("QDRANT_API_KEY")
+
+            if qdrant_url and qdrant_api_key:
+                logger.info(f"Using Qdrant Cloud at {qdrant_url}")
+                vectorstore = Qdrant.from_documents(
+                    documents=documents,
+                    embedding=cached_embeddings,
+                    url=qdrant_url,
+                    api_key=qdrant_api_key,
+                    collection_name="events_semantic",
+                    prefer_grpc=True
+                )
+            else:
+                logger.info("Using in-memory Qdrant")
+                vectorstore = Qdrant.from_documents(
+                    documents=documents,
+                    embedding=cached_embeddings,
+                    location=":memory:",
+                    collection_name="events_semantic"
+                )
 
             # Save cache after building vector store
             self._save_embedding_cache()
