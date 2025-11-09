@@ -143,11 +143,34 @@ class EventsService:
             # If resuming from interrupt, provide the resume value
             if resume_value and thread_id:
                 logger.info(f"🔄 Resuming thread {thread_id} with value: {resume_value}")
-                # Update state with the resume value
-                result = await self.graph.ainvoke(
-                    None,  # Pass None to continue from checkpoint
-                    config=config
+
+                # Geocode the user's location response
+                user_coords = self.geocoding_service.geocode_venue(resume_value)
+
+                if not user_coords:
+                    logger.warning(f"Could not geocode location: {resume_value}, using Athens center")
+                    user_lat, user_lon = 37.9838, 23.7275  # Athens center
+                else:
+                    user_lat, user_lon = user_coords
+
+                logger.info(f"📍 User location: {resume_value} -> ({user_lat}, {user_lon})")
+
+                # Update the state with location and continue execution
+                # Get current state
+                current_state = await self.graph.aget_state(config)
+
+                # Update state with user location
+                await self.graph.aupdate_state(
+                    config,
+                    {
+                        "user_lat": user_lat,
+                        "user_lon": user_lon,
+                        "location": "athens"
+                    }
                 )
+
+                # Resume execution from where it was interrupted
+                result = await self.graph.ainvoke(None, config=config)
                 return result
 
             # Build enhanced query
