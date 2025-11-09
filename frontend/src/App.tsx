@@ -71,7 +71,6 @@ function App() {
     setMessages((prev) => [...prev, userMessage]);
 
     setLoading(true);
-    setError(null);
 
     try {
       let data: EventsResponse;
