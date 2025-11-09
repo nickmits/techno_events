@@ -4,7 +4,7 @@ LangGraph node implementations for the events service
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langgraph.prebuilt import interrupt
+from langgraph.errors import NodeInterrupt
 import logging
 import json
 import re
@@ -142,8 +142,8 @@ If no specific dates mentioned, use null (don't assume dates)."""
             "dates": {"start": start_date, "end": end_date}
         }
 
-        user_location_input = interrupt(interrupt_payload)
-        logger.info(f"✅ User provided location: {user_location_input}")
+        # Raise NodeInterrupt to pause execution and wait for user input
+        raise NodeInterrupt(interrupt_payload)
 
         # Geocode the user's location
         user_coords = self.geocoding_service.geocode_venue(user_location_input)
