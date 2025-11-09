@@ -42,7 +42,9 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",  # Local development
         "http://localhost:5173",  # Vite dev server
-        "https://*.vercel.app",   # All Vercel deployments
+        "https://techno-events-2ejsochcz-nms-projects-5910347a.vercel.app",  # Vercel deployment
+        "https://techno-events-git-finalfeature-nms-projects-5910347a.vercel.app",  # Vercel git branch
+        "https://techno-events.vercel.app",  # Vercel production (if you set custom domain)
     ],
     allow_credentials=True,
     allow_methods=["*"],
