@@ -1,4 +1,3 @@
--e git+ssh://git@github.com/nickmits/AI08.git@ce842de168d131f25ac81c3391865f854b515c53#egg=04_producton_rag&subdirectory=04_production_rag
 aiohappyeyeballs==2.6.1
 aiohttp==3.12.15
 aiosignal==1.4.0
