@@ -5,7 +5,6 @@ Refactored to use modular components
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.types import Command
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from typing import Optional, Dict, Any
@@ -144,8 +143,9 @@ class EventsService:
             # If resuming from interrupt, provide the resume value
             if resume_value and thread_id:
                 logger.info(f"🔄 Resuming thread {thread_id} with value: {resume_value}")
+                # Update state with the resume value
                 result = await self.graph.ainvoke(
-                    Command(resume=resume_value),
+                    None,  # Pass None to continue from checkpoint
                     config=config
                 )
                 return result
