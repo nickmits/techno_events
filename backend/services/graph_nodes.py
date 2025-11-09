@@ -4,7 +4,7 @@ LangGraph node implementations for the events service
 from typing import Dict, Any, List
 from datetime import datetime, timedelta
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langgraph.types import interrupt
+from langgraph.prebuilt import interrupt
 import logging
 import json
 import re
