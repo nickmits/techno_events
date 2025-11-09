@@ -213,14 +213,11 @@ PyPDF2==3.0.1
 PyPika==0.48.9
 pyppeteer==2.0.0
 pyproject_hooks==1.2.0
-pyreadline3==3.5.4
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.0
 python-json-logger==3.3.0
 python-multipart==0.0.18
 pytz==2025.2
-pywin32==311
-pywinpty==3.0.0
 PyYAML==6.0.2
 pyzmq==27.1.0
 qdrant-client==1.15.1
