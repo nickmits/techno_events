@@ -33,7 +33,6 @@ function App() {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [musicPlaying, setMusicPlaying] = useState(false);
 
   // Interrupt handling for human-in-the-loop
@@ -116,7 +115,6 @@ function App() {
         setMessages((prev) => [...prev, assistantMessage]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
       const errorMessage: Message = {
         role: 'assistant',
         content: `Error: ${err instanceof Error ? err.message : 'An error occurred'}`,
