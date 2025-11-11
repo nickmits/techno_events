@@ -6,10 +6,34 @@ Includes embedding caching to reduce API calls
 
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Qdrant
-from langchain.retrievers import EnsembleRetriever
-from langchain.retrievers.multi_query import MultiQueryRetriever
-from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
 from langchain_community.retrievers import BM25Retriever
+
+# Try different import paths for EnsembleRetriever (version compatibility)
+try:
+    # For LangChain 1.0+, these are in langchain_classic
+    from langchain_classic.retrievers import EnsembleRetriever
+    from langchain_classic.retrievers import MultiQueryRetriever
+    from langchain_classic.retrievers import ContextualCompressionRetriever
+except (ImportError, ModuleNotFoundError):
+    try:
+        # Fallback: Try langchain_community
+        from langchain_community.retrievers import EnsembleRetriever
+        from langchain.retrievers.multi_query import MultiQueryRetriever
+        from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+    except (ImportError, ModuleNotFoundError):
+        try:
+            # Fallback for older versions
+            from langchain.retrievers.ensemble import EnsembleRetriever
+            from langchain.retrievers.multi_query import MultiQueryRetriever
+            from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+        except (ImportError, ModuleNotFoundError):
+            try:
+                from langchain.retrievers import EnsembleRetriever, MultiQueryRetriever, ContextualCompressionRetriever
+            except (ImportError, ModuleNotFoundError):
+                # For newer versions of langchain that removed these
+                EnsembleRetriever = None
+                MultiQueryRetriever = None
+                ContextualCompressionRetriever = None
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain.chat_models import init_chat_model
@@ -227,6 +251,23 @@ Location: {row['location']}
     def _build_ensemble_retriever(self, documents: List[Document]):
         """Build sophisticated ensemble retriever like book system"""
         try:
+            # Check if ensemble retriever is available
+            if EnsembleRetriever is None:
+                logger.warning("❌ EnsembleRetriever not available in this langchain version, using basic retrieval")
+                # Use basic vector store retriever as fallback
+                cached_embeddings = CachedEmbeddings(self.embedding_model, self)
+                vectorstore = Qdrant.from_documents(
+                    documents=documents,
+                    embedding=cached_embeddings,
+                    location=":memory:",
+                    collection_name="events_semantic"
+                )
+                self.retriever = vectorstore.as_retriever(search_kwargs={"k": 100})
+                logger.info(f"❌ Built retriever with {len(documents)} event documents (BASIC MODE - semantic only)")
+                return
+
+            logger.info(f"✅ EnsembleRetriever is available! Building advanced retrieval system...")
+
             # Get API key
             openai_api_key = os.getenv("OPENAI_API_KEY")
             cohere_api_key = os.getenv("COHERE_API_KEY")
@@ -281,20 +322,21 @@ Location: {row['location']}
                         retrievers=[bm25_retriever, multi_query_retriever, compression_retriever],
                         weights=[0.3, 0.3, 0.4]
                     )
-                    logger.info("Built ensemble retriever WITH Cohere reranking")
+                    logger.info("✅ Built ENSEMBLE retriever WITH Cohere reranking (BM25 + Semantic + MultiQuery + Reranking)")
                 except ImportError:
                     logger.warning("Cohere not available, using ensemble without reranking")
                     self.retriever = EnsembleRetriever(
                         retrievers=[bm25_retriever, multi_query_retriever],
                         weights=[0.4, 0.6]
                     )
+                    logger.info("✅ Built ENSEMBLE retriever (BM25 + Semantic + MultiQuery)")
             else:
                 # Ensemble without reranking
                 self.retriever = EnsembleRetriever(
                     retrievers=[bm25_retriever, multi_query_retriever],
                     weights=[0.4, 0.6]
                 )
-                logger.info("Built ensemble retriever WITHOUT reranking")
+                logger.info("✅ Built ENSEMBLE retriever (BM25 + Semantic + MultiQuery) - No Cohere key")
 
         except Exception as e:
             logger.error(f"Error building ensemble retriever: {e}")
